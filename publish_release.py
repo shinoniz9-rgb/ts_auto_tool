@@ -60,6 +60,17 @@ def build_exe():
     if not os.path.exists(exe_path) or os.path.getsize(exe_path) < 5 * 1024 * 1024:
         raise RuntimeError(f"File {exe_path} không tồn tại hoặc kích thước không hợp lệ!")
     print(f"✅ Đóng gói thành công: {exe_path} ({os.path.getsize(exe_path) / (1024*1024):.1f} MB)")
+
+    # Đồng bộ sang dist_share nếu thư mục này tồn tại trên máy bạn
+    dist_share = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist_share")
+    if os.path.exists(dist_share):
+        try:
+            import shutil
+            shutil.copy2(exe_path, os.path.join(dist_share, "TS_Origin_Control_V3.exe"))
+            print(f"-> Đã đồng bộ file .exe sang dist_share/ (giữ nguyên config.json sạch)")
+        except Exception:
+            pass
+
     return exe_path
 
 def create_and_upload_release(new_ver, changelog, exe_path, token):
