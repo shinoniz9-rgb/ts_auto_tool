@@ -8,6 +8,7 @@ import threading
 import subprocess
 import shutil
 import urllib.request
+import urllib.parse
 import re
 import cv2
 import numpy as np
@@ -26,72 +27,174 @@ def get_local_ip():
         return "127.0.0.1"
 
 
-_last_shot_time = 0
-_last_shot_bytes = None
-_shot_lock = threading.Lock()
+class LDStreamManager:
+    """Quản lý luồng Giám sát màn hình giả lập Siêu Nhẹ (Zero Disk I/O, Chu kỳ 0.5s - 1s - 2s)"""
+    def __init__(self):
+        self._frames = {}       # tab_key -> bytes (JPEG)
+        self._locks = {}        # tab_key -> Lock
+        self._threads = {}      # tab_key -> Thread
+        self._running = {}      # tab_key -> bool
+        self._last_req = {}     # tab_key -> float
+        self._req_quality = {}  # tab_key -> str ("0.5s" | "1s" | "2s")
+        self._active_devs = {}  # tab_key -> dev_str
+        self._main_lock = threading.Lock()
+
+    def _normalize_mode(self, q):
+        s = str(q).lower().strip()
+        if s in ("0.5s", "0.5", "1080p"):
+            return "0.5s"
+        elif s in ("2s", "2.0s", "2", "fast"):
+            return "2s"
+        return "1s"
+
+    def _resolve_tab_key(self, app, tab_index):
+        dict_map = getattr(app, "dict_name_to_index", {}) if app else {}
+        if str(tab_index) in dict_map:
+            return str(dict_map[str(tab_index)])
+        nums = re.findall(r'\d+', str(tab_index))
+        return nums[0] if nums else str(tab_index)
+
+    def touch_tab(self, app, tab_index):
+        tab_key = self._resolve_tab_key(app, tab_index)
+        with self._main_lock:
+            self._last_req[tab_key] = time.time()
+
+    def get_frame(self, app, tab_index, quality_mode="1s"):
+        tab_key = self._resolve_tab_key(app, tab_index)
+        mode = self._normalize_mode(quality_mode)
+        now = time.time()
+        with self._main_lock:
+            self._last_req[tab_key] = now
+            self._req_quality[tab_key] = mode
+            if tab_key not in self._locks:
+                self._locks[tab_key] = threading.Lock()
+            if tab_key not in self._threads or not self._threads[tab_key].is_alive():
+                self._running[tab_key] = True
+                t = threading.Thread(target=self._capture_worker, args=(app, tab_key), daemon=True)
+                self._threads[tab_key] = t
+                t.start()
+
+        with self._locks[tab_key]:
+            return self._frames.get(tab_key)
+
+    def _capture_worker(self, app, tab_key):
+        creation_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+        adb_path = os.path.join(getattr(app, 'ld_path', ''), "adb.exe") if hasattr(app, 'ld_path') else "adb.exe"
+        if not os.path.exists(adb_path):
+            for candidate_dir in [r"C:\LDPlayer\LDPlayer9", r"C:\LDPlayer", r"C:\leidian\LDPlayer9", r"C:\Program Files\LDPlayer9", r"C:\Program Files\LDPlayer\LDPlayer9"]:
+                cand = os.path.join(candidate_dir, "adb.exe")
+                if os.path.exists(cand):
+                    adb_path = cand
+                    break
+            else:
+                adb_path = shutil.which("adb") or "adb"
+
+        # Tự động map tên tab sang index số thực tế của LDPlayer
+        tab_num_str = self._resolve_tab_key(app, tab_key)
+        tab_num = int(tab_num_str) if tab_num_str.isdigit() else 0
+
+        candidate_devices = [
+            f"emulator-{5554 + tab_num * 2}",
+            f"127.0.0.1:{5555 + tab_num * 2}"
+        ]
+
+        active_dev = self._active_devs.get(tab_key, candidate_devices[0])
+
+        while self._running.get(tab_key, False):
+            now = time.time()
+            # Tự động dừng hẳn thread nếu không còn client nào xem tab này quá 15 giây (Giải phóng 100% CPU/RAM nhàn rỗi)
+            if now - self._last_req.get(tab_key, 0) > 15.0:
+                with self._main_lock:
+                    self._running[tab_key] = False
+                break
+            elif now - self._last_req.get(tab_key, 0) > 3.0:
+                time.sleep(0.5)
+                continue
+
+            frame_bytes = None
+            devs = [active_dev] + [d for d in candidate_devices if d != active_dev]
+
+            # 1. Trích xuất raw RGBA framebuffer từ Android bằng adb exec-out screencap (Zero Disk I/O)
+            for dev in devs:
+                p = None
+                try:
+                    p = subprocess.Popen(
+                        [adb_path, "-s", dev, "exec-out", "screencap"],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=creation_flags
+                    )
+                    header = p.stdout.read(16)
+                    if len(header) >= 16:
+                        w = int.from_bytes(header[0:4], "little")
+                        h = int.from_bytes(header[4:8], "little")
+                        if 100 < w <= 3840 and 100 < h <= 3840:
+                            raw_len = w * h * 4
+                            raw_bytes = p.stdout.read(raw_len)
+                            if len(raw_bytes) == raw_len:
+                                arr = np.frombuffer(raw_bytes, dtype=np.uint8).reshape((h, w, 4))
+                                bgr = cv2.cvtColor(arr, cv2.COLOR_RGBA2BGR)
+                                if w > 1280 or h > 720:
+                                    bgr = cv2.resize(bgr, (1280, 720), interpolation=cv2.INTER_LINEAR)
+                                ok_jpg, buf_jpg = cv2.imencode('.jpg', bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
+                                if ok_jpg:
+                                    frame_bytes = buf_jpg.tobytes()
+                                    self._active_devs[tab_key] = dev
+                                    active_dev = dev
+                                    break
+                except Exception:
+                    pass
+                finally:
+                    if p:
+                        try:
+                            if p.stdout:
+                                p.stdout.close()
+                        except Exception:
+                            pass
+                        try:
+                            p.kill()
+                        except Exception:
+                            pass
+
+            # 2. Dự phòng qua cơ chế cache in-memory của tool nếu có
+            if frame_bytes is None and hasattr(app, '_capture_screen_fast'):
+                try:
+                    dnconsole_path = os.path.join(getattr(app, 'ld_path', ''), "ldconsole.exe")
+                    if not os.path.exists(dnconsole_path):
+                        dnconsole_path = os.path.join(getattr(app, 'ld_path', ''), "dnconsole.exe")
+                    img = app._capture_screen_fast(dnconsole_path, tab_key, max_cache_age=0.5)
+                    if img is not None and getattr(img, 'shape', None):
+                        ok, buf = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
+                        if ok:
+                            frame_bytes = buf.tobytes()
+                except Exception:
+                    pass
+
+            if frame_bytes:
+                with self._locks[tab_key]:
+                    self._frames[tab_key] = frame_bytes
+                req_mode = self._normalize_mode(self._req_quality.get(tab_key, "1s"))
+                # Chu kỳ nghỉ giữa các lần chụp để CPU máy tính hoàn toàn hạ nhiệt:
+                sleep_sec = 0.5 if req_mode == "0.5s" else (2.0 if req_mode == "2s" else 1.0)
+                time.sleep(sleep_sec)
+            else:
+                time.sleep(0.5)
+
+
+_stream_manager = LDStreamManager()
+
 
 def get_screenshot_bytes(app):
-    """Chụp màn hình giả lập LDPlayer đang chọn và trả về JPEG bytes (cache 0.3s giảm đơ/lag ADB mà vẫn mượt 0.5s)"""
-    global _last_shot_time, _last_shot_bytes
-    now = time.time()
-    with _shot_lock:
-        if _last_shot_bytes is not None and (now - _last_shot_time) < 0.3:
-            return _last_shot_bytes
-
-        try:
-            tab_name, tab_index = app._get_selected_ld_info()
-            if tab_index is None:
-                return None
-
-            dnconsole_path = os.path.join(app.ld_path, "ldconsole.exe")
-            if not os.path.exists(dnconsole_path):
-                dnconsole_path = os.path.join(app.ld_path, "dnconsole.exe")
-
-            img = None
-
-            # 1. Ưu tiên lấy từ bộ nhớ đệm frame gần nhất của app nếu bot đang chạy (Zero Disk & ADB latency)
-            if hasattr(app, '_screen_cache'):
-                cached = getattr(app, '_screen_cache', {}).get(str(tab_index))
-                if cached and (now - cached.get("time", 0)) < 0.4 and cached.get("img") is not None:
-                    img = cached["img"]
-
-            # 2. Sử dụng cơ chế chụp In-Memory siêu tốc từ app._capture_screen_fast (Zero Disk I/O)
-            if img is None and hasattr(app, '_capture_screen_fast'):
-                img = app._capture_screen_fast(dnconsole_path, tab_index, max_cache_age=0.3)
-
-            # 3. Dự phòng qua file tạm nếu cơ chế In-Memory chưa sẵn sàng
-            if img is None:
-                temp_dir = os.path.join(tempfile.gettempdir(), "ts_origin_web")
-                os.makedirs(temp_dir, exist_ok=True)
-                temp_screen = os.path.join(temp_dir, f"web_cap_{tab_index}.png")
-
-                if os.path.exists(temp_screen):
-                    try: os.remove(temp_screen)
-                    except Exception: pass
-
-                app._exec_cmd([dnconsole_path, "adb", "--index", str(tab_index), "--command", "shell screencap -p /sdcard/web_cap.png"])
-                app._exec_cmd([dnconsole_path, "adb", "--index", str(tab_index), "--command", f"pull /sdcard/web_cap.png \"{temp_screen}\""])
-
-                if os.path.exists(temp_screen) and os.path.getsize(temp_screen) > 0:
-                    d = np.fromfile(temp_screen, dtype=np.uint8)
-                    img = cv2.imdecode(d, cv2.IMREAD_COLOR)
-                    try: os.remove(temp_screen)
-                    except Exception: pass
-
-            # 4. Resize và encode sang JPEG chất lượng tối ưu cho truyền tải Web từ xa (nhẹ và mượt)
-            if img is not None and getattr(img, 'shape', None) and img.shape[0] > 0 and img.shape[1] > 0:
-                h, w = img.shape[:2]
-                if w > 850:
-                    scale = 850.0 / w
-                    img = cv2.resize(img, (850, int(h * scale)), interpolation=cv2.INTER_AREA)
-                ok, buf = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), 72])
-                if ok:
-                    _last_shot_bytes = buf.tobytes()
-                    _last_shot_time = now
-                    return _last_shot_bytes
-        except Exception:
-            pass
-        return None
+    """Chụp màn hình giả lập LDPlayer đang chọn và trả về JPEG bytes"""
+    try:
+        tab_name, tab_index = app._get_selected_ld_info() if hasattr(app, '_get_selected_ld_info') else (None, "0")
+        if tab_index is not None:
+            f = _stream_manager.get_frame(app, str(tab_index), quality_mode="1s")
+            if f:
+                return f
+    except Exception:
+        pass
+    return None
 
 
 HTML_PAGE = """<!DOCTYPE html>
@@ -705,18 +808,17 @@ HTML_PAGE = """<!DOCTYPE html>
         /* Screen Preview & Fullscreen Theater Mode */
         .preview-box {
             width: 100%;
+            aspect-ratio: 16 / 9;
             border-radius: 12px;
             overflow: hidden;
-            background: #000;
-            border: 1px solid var(--border);
+            background: #090d16;
+            border: 1px solid rgba(255, 255, 255, 0.12);
             position: relative;
-            min-height: 220px;
             display: flex;
             align-items: center;
             justify-content: center;
-            box-shadow: 0 6px 20px rgba(0,0,0,0.5);
-            cursor: crosshair;
-            touch-action: manipulation;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+            cursor: default;
             user-select: none;
             -webkit-user-select: none;
             -webkit-tap-highlight-color: transparent;
@@ -724,9 +826,10 @@ HTML_PAGE = """<!DOCTYPE html>
 
         .preview-img {
             width: 100%;
-            height: auto;
+            height: 100%;
             display: block;
             object-fit: contain;
+            pointer-events: none;
             user-select: none;
             -webkit-user-drag: none;
         }
@@ -857,112 +960,254 @@ HTML_PAGE = """<!DOCTYPE html>
         .daily-subcards-grid {
             display: grid;
             grid-template-columns: repeat(2, minmax(0, 1fr));
-            grid-auto-rows: 1fr;
+            grid-template-rows: auto 1fr;
             gap: 10px;
             width: 100%;
             box-sizing: border-box;
         }
 
         .daily-subcards-grid .card {
-            padding: 12px 10px !important;
-            display: flex;
-            flex-direction: column;
-            min-width: 0;
-            overflow: hidden;
-            box-sizing: border-box;
-        }
-
-        .daily-subcards-grid .card-inner-box {
-            padding: 8px 6px !important;
-            gap: 8px !important;
-            box-sizing: border-box !important;
-            width: 100% !important;
+            display: flex !important;
+            flex-direction: column !important;
             min-width: 0 !important;
-        }
-
-        /* Hàng 1 chia đôi cân đối 50% - 50% đối xứng gương */
-        .daily-card-row1 {
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 6px;
-            width: 100%;
-            min-height: 38px;
-            box-sizing: border-box;
-            align-items: center;
-        }
-
-        .daily-card-row1 .chk-label {
-            width: 100% !important;
-            min-width: 0 !important;
-            justify-content: center !important;
-            padding: 0 4px !important;
-            gap: 4px !important;
-            font-size: 0.8rem !important;
-            letter-spacing: -0.2px !important;
             box-sizing: border-box !important;
+        }
+
+        /* Hàng 1: Card 40 NPC & Nhị Kiều thu gọn trục Y ôm sát như Card Boss Thế Giới */
+        .daily-subcard-compact {
+            padding: 10px 12px !important;
+        }
+
+        .daily-subcard-compact .card-header {
+            height: 28px !important;
+            min-height: 28px !important;
+            max-height: 28px !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: space-between !important;
+            padding-bottom: 4px !important;
+            margin-bottom: 8px !important;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
+            box-sizing: border-box !important;
+        }
+
+        .daily-subcard-compact .card-header .card-title {
+            font-size: 0.95rem !important;
             white-space: nowrap !important;
-            margin: 0 !important;
-            height: 38px !important;
         }
 
-        .daily-card-row1 .chk-label input {
-            width: 15px !important;
-            height: 15px !important;
-            min-width: 15px !important;
+        .daily-subcard-compact .card-header #entry_D_time {
+            height: 26px !important;
+            min-height: 26px !important;
+            max-height: 26px !important;
+            line-height: 24px !important;
+            font-size: 0.84rem !important;
+            width: 70px !important;
+            padding: 0 4px !important;
+            box-sizing: border-box !important;
+            margin: 0 !important;
+        }
+
+        .daily-subcard-compact .header-time-placeholder {
+            width: 70px !important;
+            height: 26px !important;
+            visibility: hidden !important;
+            flex-shrink: 0 !important;
+        }
+
+        /* Khung nội dung: Bỏ hoàn toàn fixed height để ôm trọn các mục bên trong, tuyệt đối không bị đè viền */
+        .daily-subcard-compact .card-inner-box {
+            padding: 6px 8px !important;
+            box-sizing: border-box !important;
+            width: 100% !important;
+            min-width: 0 !important;
+            display: flex !important;
+            flex-direction: row !important;
+            align-items: center !important;
+            justify-content: space-between !important;
+            gap: 8px !important;
+            height: auto !important;
+            min-height: unset !important;
+            max-height: unset !important;
+        }
+
+        /* Hàng 2: Card Hoạt Động 1 & 2 tăng trục Y bù lại phần đã giảm của Hàng 1 */
+        .daily-subcard-expanded {
+            padding: 10px 12px !important;
+            min-height: 110px !important;
+        }
+
+        .daily-subcard-expanded .card-header {
+            height: 28px !important;
+            min-height: 28px !important;
+            max-height: 28px !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: space-between !important;
+            padding-bottom: 4px !important;
+            margin-bottom: 8px !important;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
+            box-sizing: border-box !important;
+        }
+
+        .daily-subcard-expanded .card-header .card-title {
+            font-size: 0.95rem !important;
+            white-space: nowrap !important;
+        }
+
+        .daily-subcard-expanded .card-inner-box {
+            padding: 8px 10px !important;
+            box-sizing: border-box !important;
+            width: 100% !important;
+            min-width: 0 !important;
+            display: flex !important;
+            flex: 1 !important;
+            flex-direction: column !important;
+            align-items: center !important;
+            justify-content: center !important;
+            min-height: 52px !important;
+            color: var(--text-muted) !important;
+            font-size: 0.84rem !important;
+            font-style: italic !important;
+        }
+
+        /* Nút ô tích & Dropdown của lưới Daily Subcards: Đồng bộ chiều cao chuẩn 36px, lọt lòng gọn gàng */
+        .daily-subcards-grid .chk-label {
+            flex: 1 !important;
+            min-width: 0 !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: flex-start !important;
+            gap: 6px !important;
+            height: 36px !important;
+            min-height: 36px !important;
+            max-height: 36px !important;
+            padding: 0 8px !important;
+            font-size: 0.84rem !important;
+            font-weight: 700 !important;
+            white-space: nowrap !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+            margin: 0 !important;
+            cursor: pointer !important;
+            box-sizing: border-box !important;
+        }
+
+        .daily-subcards-grid .chk-label input {
+            width: 16px !important;
+            height: 16px !important;
+            min-width: 16px !important;
             margin: 0 !important;
             flex-shrink: 0 !important;
         }
 
-        .daily-card-row1 .time-input {
-            width: 100% !important;
-            min-width: 0 !important;
-            padding: 0 2px !important;
-            font-size: 0.88rem !important;
-            letter-spacing: 0.5px !important;
+        .daily-subcards-grid select {
+            width: 90px !important;
+            min-width: 78px !important;
+            max-width: 100px !important;
+            height: 36px !important;
+            min-height: 36px !important;
+            max-height: 36px !important;
+            line-height: 34px !important;
+            text-align: center !important;
+            font-size: 0.82rem !important;
+            font-weight: 700 !important;
+            padding: 0 4px !important;
             box-sizing: border-box !important;
-            height: 38px !important;
+            border-radius: 8px !important;
+            background: #25272e !important;
+            border: 1px solid var(--border) !important;
+            color: #ffffff !important;
+            cursor: pointer !important;
+            outline: none !important;
+            flex-shrink: 0 !important;
+            transition: background 0.15s ease, border-color 0.15s ease;
         }
 
-        .daily-subcards-grid select {
-            width: 100% !important;
-            min-width: 0 !important;
-            text-align: center !important;
-            font-weight: 600 !important;
-            height: 38px !important;
-            box-sizing: border-box !important;
+        .daily-subcards-grid select:hover, .daily-subcards-grid select:focus {
+            background: #4b5563 !important;
+            border-color: var(--accent) !important;
         }
 
         @media (max-width: 440px) {
             .daily-subcards-grid {
-                gap: 6px !important;
+                gap: 8px !important;
             }
-            .daily-subcards-grid .card {
-                padding: 10px 6px !important;
+            .daily-subcard-compact {
+                padding: 8px 8px !important;
             }
-            .daily-subcards-grid .card-inner-box {
-                padding: 6px 4px !important;
-                gap: 6px !important;
+            .daily-subcard-compact .card-header {
+                height: 26px !important;
+                min-height: 26px !important;
+                max-height: 26px !important;
+                margin-bottom: 6px !important;
+                padding-bottom: 2px !important;
             }
-            .daily-card-row1 {
-                gap: 4px !important;
+            .daily-subcard-compact .card-header .card-title {
+                font-size: 0.85rem !important;
             }
-            .daily-card-row1 .chk-label {
-                font-size: 0.72rem !important;
+            .daily-subcard-compact .card-header #entry_D_time {
+                width: 60px !important;
+                height: 24px !important;
+                min-height: 24px !important;
+                max-height: 24px !important;
+                line-height: 22px !important;
+                font-size: 0.78rem !important;
                 padding: 0 2px !important;
-                gap: 3px !important;
-                letter-spacing: -0.4px !important;
             }
-            .daily-card-row1 .chk-label input {
-                width: 13px !important;
-                height: 13px !important;
-                min-width: 13px !important;
+            .daily-subcard-compact .header-time-placeholder {
+                width: 60px !important;
+                height: 24px !important;
             }
-            .daily-card-row1 .time-input {
-                font-size: 0.8rem !important;
-                padding: 0 1px !important;
+            .daily-subcard-compact .card-inner-box {
+                height: auto !important;
+                min-height: unset !important;
+                max-height: unset !important;
+                padding: 4px 6px !important;
+                gap: 6px !important;
+            }
+            .daily-subcard-expanded {
+                padding: 8px 8px !important;
+                min-height: 95px !important;
+            }
+            .daily-subcard-expanded .card-header {
+                height: 26px !important;
+                min-height: 26px !important;
+                max-height: 26px !important;
+                margin-bottom: 6px !important;
+                padding-bottom: 2px !important;
+            }
+            .daily-subcard-expanded .card-header .card-title {
+                font-size: 0.85rem !important;
+            }
+            .daily-subcard-expanded .card-inner-box {
+                padding: 6px 6px !important;
+                min-height: 48px !important;
+                font-size: 0.78rem !important;
+            }
+            .daily-subcards-grid .chk-label {
+                height: 32px !important;
+                min-height: 32px !important;
+                max-height: 32px !important;
+                font-size: 0.78rem !important;
+                gap: 4px !important;
+                padding: 0 6px !important;
+                letter-spacing: -0.2px !important;
+            }
+            .daily-subcards-grid .chk-label input {
+                width: 14px !important;
+                height: 14px !important;
+                min-width: 14px !important;
             }
             .daily-subcards-grid select {
-                font-size: 0.78rem !important;
+                width: 76px !important;
+                min-width: 66px !important;
+                max-width: 82px !important;
+                height: 32px !important;
+                min-height: 32px !important;
+                max-height: 32px !important;
+                line-height: 30px !important;
+                font-size: 0.76rem !important;
                 padding: 0 2px !important;
             }
             .select-right-standard, .combat-select-right {
@@ -1101,50 +1346,90 @@ HTML_PAGE = """<!DOCTYPE html>
             display: flex;
             align-items: center;
             justify-content: space-between;
-            gap: 8px;
-            margin-top: 10px;
-            padding-top: 8px;
-            border-top: 1px solid rgba(255, 255, 255, 0.06);
+            gap: 12px;
+            margin-top: 12px;
+            padding-top: 10px;
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
             flex-wrap: wrap;
         }
 
         .speed-group {
-            display: inline-flex;
-            background: rgba(15, 23, 42, 0.85);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 8px;
-            padding: 2px;
-            gap: 2px;
+            display: flex;
+            flex: 1;
+            max-width: 360px;
+            background: rgba(15, 23, 42, 0.9);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 9px;
+            padding: 3px;
+            gap: 3px;
         }
 
         .speed-btn {
+            flex: 1;
             background: transparent;
             border: none;
             color: #94a3b8;
-            padding: 4px 10px;
+            padding: 6px 10px;
             border-radius: 6px;
-            font-size: 0.72rem;
-            font-weight: 600;
+            font-size: 0.74rem;
+            font-weight: 700;
+            text-align: center;
             cursor: pointer;
-            transition: all 0.2s ease;
+            white-space: nowrap;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
         }
 
         .speed-btn:hover {
-            color: #fff;
+            color: #f8fafc;
+            background: rgba(255, 255, 255, 0.06);
         }
 
         .speed-btn.active {
             background: var(--accent);
-            color: #fff;
-            box-shadow: 0 2px 8px rgba(234, 88, 12, 0.4);
+            color: #ffffff;
+            box-shadow: 0 2px 10px rgba(234, 88, 12, 0.45);
+        }
+
+        .stream-actions-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-shrink: 0;
+        }
+
+        .btn-stream-pause {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            color: #f1f5f9;
+            padding: 6px 14px;
+            border-radius: 8px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .btn-stream-pause:hover {
+            background: rgba(255, 255, 255, 0.15);
+            border-color: rgba(255, 255, 255, 0.25);
+            color: #ffffff;
+        }
+
+        .btn-stream-pause:active {
+            transform: scale(0.96);
         }
 
         .stream-badge {
             display: inline-flex;
             align-items: center;
             gap: 6px;
-            font-size: 0.73rem;
-            color: #94a3b8;
+            font-size: 0.74rem;
+            font-weight: 600;
+            color: #cbd5e1;
+            padding: 5px 10px;
+            background: rgba(15, 23, 42, 0.65);
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.06);
         }
 
         .stream-dot {
@@ -1159,6 +1444,26 @@ HTML_PAGE = """<!DOCTYPE html>
             background-color: #10b981;
             box-shadow: 0 0 8px #10b981;
             animation: pulse 1.2s infinite;
+        }
+
+        @media (max-width: 600px) {
+            .stream-ctrl-bar {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 10px;
+            }
+            .speed-group {
+                max-width: 100% !important;
+                width: 100%;
+            }
+            .speed-btn {
+                padding: 7px 4px;
+                font-size: 0.72rem;
+            }
+            .stream-actions-group {
+                width: 100%;
+                justify-content: space-between;
+            }
         }
 
         /* Fullscreen Theater Mode */
@@ -1308,46 +1613,7 @@ HTML_PAGE = """<!DOCTYPE html>
             }
         }
 
-        /* Interactive Touch Ripple & Coordinates */
-        .touch-ripple {
-            position: absolute;
-            width: 32px;
-            height: 32px;
-            border-radius: 50%;
-            background: rgba(56, 189, 248, 0.45);
-            border: 2px solid #38bdf8;
-            pointer-events: none;
-            animation: rippleAnim 0.6s ease-out forwards;
-            z-index: 100;
-        }
-
-        .touch-coord {
-            position: absolute;
-            background: rgba(15, 23, 42, 0.88);
-            border: 1px solid #38bdf8;
-            color: #38bdf8;
-            font-size: 0.68rem;
-            font-weight: 700;
-            padding: 2px 6px;
-            border-radius: 4px;
-            pointer-events: none;
-            transform: translate(-50%, -130%);
-            animation: coordAnim 0.8s ease-out forwards;
-            z-index: 101;
-            white-space: nowrap;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.5);
-        }
-
-        @keyframes rippleAnim {
-            0% { transform: scale(0.3); opacity: 1; }
-            100% { transform: scale(2.5); opacity: 0; }
-        }
-
-        @keyframes coordAnim {
-            0% { opacity: 1; transform: translate(-50%, -100%); }
-            80% { opacity: 0.9; transform: translate(-50%, -140%); }
-            100% { opacity: 0; transform: translate(-50%, -160%); }
-        }
+        /* Stream View-Only Mode (Đã tắt thao tác chạm an toàn) */
 
         /* Team Card */
         .team-list-container {
@@ -1820,7 +2086,6 @@ HTML_PAGE = """<!DOCTYPE html>
                 <div class="card-header">
                     <span class="card-title">Màn Hình Trực Tiếp</span>
                     <div style="display:flex; align-items:center; gap:6px;">
-                        <button class="btn-mini" onclick="refreshScreenshot()">Chụp Ảnh</button>
                         <button class="btn-fs" onclick="toggleFullscreen(true)">Toàn Màn Hình</button>
                     </div>
                 </div>
@@ -1830,13 +2095,13 @@ HTML_PAGE = """<!DOCTYPE html>
                     <div class="fs-info">
                         <span class="status-dot" id="fsStatusDot"></span>
                         <span id="fsTabTitle">Tab LDPlayer</span>
-                        <span class="stream-badge" id="fsStreamBadge" style="margin-left:4px;">0.5s</span>
+                        <span class="stream-badge" id="fsStreamBadge" style="margin-left:4px; color:#38bdf8;">1.0s (Chuẩn)</span>
                     </div>
                     <div style="display:flex; align-items:center; gap:6px;">
                         <div class="speed-group">
-                            <button class="speed-btn" data-speed="500" onclick="setStreamSpeed(500)">0.5s</button>
-                            <button class="speed-btn" data-speed="1000" onclick="setStreamSpeed(1000)">1.0s</button>
-                            <button class="speed-btn" data-speed="2000" onclick="setStreamSpeed(2000)">2.0s</button>
+                            <button class="speed-btn" id="btnQ05" onclick="setQuality('0.5s')">0.5s</button>
+                            <button class="speed-btn active" id="btnQ1" onclick="setQuality('1s')">1.0s</button>
+                            <button class="speed-btn" id="btnQ2" onclick="setQuality('2s')">2.0s</button>
                         </div>
                         <div class="fs-quick-actions">
                             <button class="fs-btn-action btn-stop" onclick="sendAction('stop')">Dừng</button>
@@ -1846,25 +2111,23 @@ HTML_PAGE = """<!DOCTYPE html>
                 </div>
 
                 <div class="preview-box" id="screenPreviewBox">
-                    <img id="screenImg" class="preview-img" src="/api/screenshot" alt="Màn hình giả lập">
+                    <img id="screenImg" class="preview-img" src="/api/screenshot?q=1s" alt="Màn hình giả lập TS Origin">
                     <div class="fs-rotate-hint">Xoay ngang điện thoại để xem cực đại</div>
                 </div>
 
                 <div class="stream-ctrl-bar">
-                    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                        <label style="font-size:0.75rem; font-weight:600; color:var(--text-muted); display:inline-flex; align-items:center; white-space:nowrap; cursor:pointer;">
-                            <input type="checkbox" id="autoStream" onchange="toggleAutoStream(this.checked)" checked style="accent-color:var(--accent); margin-right:5px;"> Tự truyền ảnh
-                        </label>
-                        <div class="speed-group">
-                            <button class="speed-btn" data-speed="500" onclick="setStreamSpeed(500)">0.5s (Mượt)</button>
-                            <button class="speed-btn" data-speed="1000" onclick="setStreamSpeed(1000)">1.0s</button>
-                            <button class="speed-btn" data-speed="2000" onclick="setStreamSpeed(2000)">2.0s</button>
-                        </div>
+                    <div class="speed-group">
+                        <button class="speed-btn" id="btnBarQ05" onclick="setQuality('0.5s')">0.5s (Nhanh)</button>
+                        <button class="speed-btn active" id="btnBarQ1" onclick="setQuality('1s')">1.0s (Chuẩn)</button>
+                        <button class="speed-btn" id="btnBarQ2" onclick="setQuality('2s')">2.0s (Tiết Kiệm)</button>
                     </div>
-                    <span class="stream-badge" id="lblStreamStatus">
-                        <span class="stream-dot live" id="streamDot"></span>
-                        <span id="streamSpeedText">Đang truyền (0.5s)</span>
-                    </span>
+                    <div class="stream-actions-group">
+                        <button class="btn-stream-pause" id="btnStreamToggle" onclick="toggleLiveStream()">Tạm Dừng</button>
+                        <span class="stream-badge" id="lblStreamStatus">
+                            <span class="stream-dot live" id="streamDot"></span>
+                            <span id="streamSpeedText">Trực tiếp: 1.0s (Chuẩn)</span>
+                        </span>
+                    </div>
                 </div>
             </div>
 
@@ -1881,9 +2144,6 @@ HTML_PAGE = """<!DOCTYPE html>
                         <input type="text" id="entry_hen_gio_time" class="time-input" value="05:00" placeholder="05:00" maxlength="5" style="width:76px;" onchange="onTextChanged('hen_gio_time', this.value)" onkeyup="if(event.key==='Enter') this.blur()">
                         <span id="lbl_realtime_clock" style="font-family:monospace, 'Segoe UI'; font-size:0.82rem; font-weight:700; color:#f97316; background:#1e293b; border:1px solid rgba(249, 115, 22, 0.4); height:38px; line-height:36px; padding:0 8px; border-radius:8px; min-width:68px; text-align:center; box-sizing:border-box; display:inline-block;">--:--:--</span>
                     </div>
-                </div>
-                <div style="font-size:0.72rem; color:var(--text-muted); margin-top:6px; padding:0 4px; line-height:1.4;">
-                    Khi tích Hẹn Giờ, các Card (A, B, C, D) gạt ON sẽ chờ đến đúng mốc giờ mới chạy tuần tự. Chạy xong tự động nhả về OFF.
                 </div>
             </div>
         </div>
@@ -2065,67 +2325,56 @@ HTML_PAGE = """<!DOCTYPE html>
 
             <!-- 2. Khung Hàng Dưới: Lưới 4 Card Cân Đối (2 Hàng x 2 Cột) -->
             <div class="daily-subcards-grid">
-                <!-- Hàng 1, Cột Trái: Card 40 NPC -->
-                <div class="card">
+                <!-- Hàng 1, Cột Trái: Card 40 NPC (Thu gọn trục Y như Card Boss Thế Giới) -->
+                <div class="card daily-subcard daily-subcard-compact">
                     <div class="card-header">
                         <span class="card-title">40 NPC</span>
+                        <input type="text" id="entry_D_time" class="time-input" value="20:00" placeholder="20:00" maxlength="5" onchange="onTextChanged('D_time', this.value)" onkeyup="if(event.key==='Enter') this.blur()">
                     </div>
-                    <div class="card-inner-box" style="flex:1; display:flex; flex-direction:column; justify-content:space-between;">
-                        <!-- Hàng 1: [ ] 40 NPC (Trái) - Ô Giờ Hẹn (Phải) -->
-                        <div class="daily-card-row1">
-                            <label class="chk-label">
-                                <input type="checkbox" id="chk_D3" onchange="onCheckboxChanged('D3', this.checked)"> 40 NPC
-                            </label>
-                            <input type="text" id="entry_D_time" class="time-input" value="20:00" placeholder="20:00" maxlength="5" onchange="onTextChanged('D_time', this.value)" onkeyup="if(event.key==='Enter') this.blur()">
-                        </div>
-                        <!-- Hàng 2: Menu Chế Độ (Auto / Click) -->
+                    <div class="card-inner-box">
+                        <label class="chk-label">
+                            <input type="checkbox" id="chk_D3" onchange="onCheckboxChanged('D3', this.checked)"> 40 NPC
+                        </label>
                         <select id="combo_D_chien_dau" onchange="onComboChanged('D_chien_dau', this.value)">
-                            <option value="Auto">Auto</option><option value="Click">Click</option>
+                            <option value="Auto" selected>Auto</option>
                         </select>
                     </div>
                 </div>
 
-                <!-- Hàng 1, Cột Phải: Card Nhị Kiều -->
-                <div class="card">
+                <!-- Hàng 1, Cột Phải: Card Nhị Kiều (Thu gọn trục Y như Card Boss Thế Giới) -->
+                <div class="card daily-subcard daily-subcard-compact">
                     <div class="card-header">
                         <span class="card-title">Nhị Kiều</span>
+                        <div class="header-time-placeholder"></div>
                     </div>
-                    <div class="card-inner-box" style="flex:1; display:flex; flex-direction:column; justify-content:space-between;">
-                        <!-- Hàng 1: [ ] Nhị Kiều (Trái) - [ ] Di Chuyển (Phải) -->
-                        <div class="daily-card-row1">
-                            <label class="chk-label">
-                                <input type="checkbox" id="chk_D4" onchange="onCheckboxChanged('D4', this.checked)"> Nhị Kiều
-                            </label>
-                            <label class="chk-label">
-                                <input type="checkbox" id="chk_D_di_chuyen" onchange="onCheckboxChanged('D_di_chuyen', this.checked)"> Di Chuyển
-                            </label>
-                        </div>
-                        <!-- Hàng 2: Menu Chế Độ (Mốc Tầng) -->
+                    <div class="card-inner-box">
+                        <label class="chk-label">
+                            <input type="checkbox" id="chk_D4" onchange="onCheckboxChanged('D4', this.checked)"> Nhị Kiều
+                        </label>
                         <select id="combo_D_tang" onchange="onComboChanged('D_tang', this.value)">
                             <option value="Auto" selected>Auto</option>
-                            <option value="1 - 14">1 - 14</option>
-                            <option value="Trệt - 10">Trệt - 10</option>
-                            <option value="11 - 14">11 - 14</option>
                         </select>
                     </div>
                 </div>
 
-                <!-- Hàng 2, Cột Trái: Card Hoạt Động 1 (Dưới 40 NPC) -->
-                <div class="card">
+                <!-- Hàng 2, Cột Trái: Card Hoạt Động 1 (Tăng kích thước trục Y bù lại) -->
+                <div class="card daily-subcard daily-subcard-expanded">
                     <div class="card-header">
                         <span class="card-title">Hoạt Động 1</span>
+                        <div class="header-time-placeholder"></div>
                     </div>
-                    <div class="card-inner-box" style="flex:1; display:flex; flex-direction:column; justify-content:center; align-items:center; min-height:100px; color:var(--text-muted); font-size:0.82rem; font-style:italic;">
+                    <div class="card-inner-box">
                         <span>(Chờ cấu hình)</span>
                     </div>
                 </div>
 
-                <!-- Hàng 2, Cột Phải: Card Hoạt Động 2 (Dưới Nhị Kiều) -->
-                <div class="card">
+                <!-- Hàng 2, Cột Phải: Card Hoạt Động 2 (Tăng kích thước trục Y bù lại) -->
+                <div class="card daily-subcard daily-subcard-expanded">
                     <div class="card-header">
                         <span class="card-title">Hoạt Động 2</span>
+                        <div class="header-time-placeholder"></div>
                     </div>
-                    <div class="card-inner-box" style="flex:1; display:flex; flex-direction:column; justify-content:center; align-items:center; min-height:100px; color:var(--text-muted); font-size:0.82rem; font-style:italic;">
+                    <div class="card-inner-box">
                         <span>(Chờ cấu hình)</span>
                     </div>
                 </div>
@@ -2271,7 +2520,11 @@ HTML_PAGE = """<!DOCTYPE html>
 
             window.scrollTo({ top: 0, behavior: 'instant' });
             
-            if (tabId === 'screen') refreshScreenshot();
+            if (tabId === 'screen') {
+                if (typeof startLiveStream === 'function') startLiveStream();
+            } else {
+                if (typeof stopLiveStream === 'function') stopLiveStream();
+            }
             if (tabId === 'logs') fetchStatus();
         }
 
@@ -2374,6 +2627,35 @@ HTML_PAGE = """<!DOCTYPE html>
         let lastServerData = null;
 
         function renderUI(data) {
+            // Hiển thị thanh tiến trình cập nhật tự động (nếu có bản mới đang tải)
+            const existingBanner = document.getElementById('autoUpdateBanner');
+            if (data.update_info && data.update_info.status === 'downloading') {
+                const pct = data.update_info.progress || 0;
+                const ver = data.update_info.latest_version || 'mới';
+                if (!existingBanner) {
+                    const banner = document.createElement('div');
+                    banner.id = 'autoUpdateBanner';
+                    banner.style = 'position:fixed; top:12px; left:50%; transform:translateX(-50%); z-index:999999; width:92%; max-width:440px; background:linear-gradient(135deg,#1e3a8a,#2563eb); border:1px solid #60a5fa; border-radius:12px; padding:12px 16px; box-shadow:0 8px 30px rgba(0,0,0,0.6); color:#fff; text-align:center; font-family:sans-serif;';
+                    banner.innerHTML = `
+                        <div style="font-weight:700; font-size:14px; margin-bottom:6px; display:flex; align-items:center; justify-content:center; gap:8px;">
+                            <span>🔄</span> Đang tự động cập nhật lên ${ver} (${pct}%)
+                        </div>
+                        <div style="background:rgba(255,255,255,0.25); border-radius:6px; height:8px; overflow:hidden; margin-bottom:6px;">
+                            <div id="autoUpdateProgress" style="background:#67e8f9; height:100%; width:${pct}%; transition:width 0.3s ease;"></div>
+                        </div>
+                        <div style="font-size:11px; opacity:0.9;">Tool sẽ tự động khởi động lại sau khi tải xong 100%.</div>
+                    `;
+                    document.body.appendChild(banner);
+                } else {
+                    const progEl = document.getElementById('autoUpdateProgress');
+                    if (progEl) progEl.style.width = pct + '%';
+                    const titleEl = existingBanner.querySelector('div');
+                    if (titleEl) titleEl.innerHTML = `<span>🔄</span> Đang tự động cập nhật lên ${ver} (${pct}%)`;
+                }
+            } else if (existingBanner) {
+                existingBanner.remove();
+            }
+
             const statusDot = document.getElementById('statusDot');
             const statusText = document.getElementById('statusText');
 
@@ -2385,27 +2667,9 @@ HTML_PAGE = """<!DOCTYPE html>
                 statusText.innerText = 'Sẵn sàng';
             }
 
-            const selectTab = document.getElementById('selectTab');
             const newTabs = data.tabs || [];
-            if (selectTab) {
-                const curTabValues = Array.from(selectTab.options).map(o => o.value);
-                const isTabListDiff = newTabs.length !== curTabValues.length || newTabs.some((t, i) => t !== curTabValues[i]);
-                if (isTabListDiff) {
-                    if (newTabs.length > 0) {
-                        selectTab.innerHTML = '';
-                        newTabs.forEach(t => {
-                            const opt = document.createElement('option');
-                            opt.value = t;
-                            opt.innerText = t;
-                            if (t === data.selected_tab) opt.selected = true;
-                            selectTab.appendChild(opt);
-                        });
-                    } else {
-                        selectTab.innerHTML = '<option value="">(Chưa phát hiện Tab LD nào mở)</option>';
-                    }
-                } else if (data.selected_tab && document.activeElement !== selectTab) {
-                    selectTab.value = data.selected_tab;
-                }
+            if (data.selected_tab && currentSelectedTab === '0') {
+                currentSelectedTab = data.selected_tab;
             }
 
             const fsTabTitle = document.getElementById('fsTabTitle');
@@ -2518,7 +2782,10 @@ HTML_PAGE = """<!DOCTYPE html>
             applyDynamicUIRules();
 
             if (data.logs && data.logs.length > 0) {
-                renderFilteredLogs(data.logs);
+                const logsPane = document.getElementById('tabPane_logs');
+                if (logsPane && logsPane.classList.contains('active')) {
+                    renderFilteredLogs(data.logs);
+                }
             }
         }
 
@@ -2593,7 +2860,6 @@ HTML_PAGE = """<!DOCTYPE html>
             const chkDNhanDoi = document.getElementById('chk_D_nhan_doi');
             const chkD3 = document.getElementById('chk_D3');
             const chkD4 = document.getElementById('chk_D4');
-            const chkDDiChuyen = document.getElementById('chk_D_di_chuyen');
             const chkBdoi = document.getElementById('chk_B_doi');
             const comboEQS = document.getElementById('combo_E_quan_su');
             const comboDChienDau = document.getElementById('combo_D_chien_dau');
@@ -2602,26 +2868,7 @@ HTML_PAGE = """<!DOCTYPE html>
             const listABox = document.getElementById('list_E_A_box');
             const listBBox = document.getElementById('list_E_B_box');
 
-            // Ô Di Chuyển: Khóa mờ và bỏ chọn khi ô 40 NPC (D3) được tích
-            if (chkDDiChuyen) {
-                const lbl = chkDDiChuyen.closest('.chk-label');
-                if (chkD3 && chkD3.checked) {
-                    chkDDiChuyen.checked = false;
-                    chkDDiChuyen.disabled = true;
-                    if (lbl) {
-                        lbl.style.opacity = '0.35';
-                        lbl.style.pointerEvents = 'none';
-                    }
-                } else {
-                    chkDDiChuyen.disabled = false;
-                    if (lbl) {
-                        lbl.style.opacity = '1';
-                        lbl.style.pointerEvents = 'auto';
-                    }
-                }
-            }
-
-            // 0. Quy tắc ô Nhận Đội: loại trừ Tổ Đội (D2), 40 NPC (D3), Nhị Kiều (D4) - GIỮ NGUYÊN Di Chuyển
+            // 0. Quy tắc ô Nhận Đội: loại trừ Tổ Đội (D2), 40 NPC (D3), Nhị Kiều (D4)
             if (chkDNhanDoi && chkDNhanDoi.checked) {
                 if (chkD2) chkD2.checked = false;
                 if (chkD3) chkD3.checked = false;
@@ -2740,21 +2987,10 @@ HTML_PAGE = """<!DOCTYPE html>
                 userLocks['chk_D4'] = Date.now() + 2500;
                 const chkD4 = document.getElementById('chk_D4');
                 if (chkD4) chkD4.checked = false;
-
-                userLocks['chk_D_di_chuyen'] = Date.now() + 2500;
-                const chkDDiChuyen = document.getElementById('chk_D_di_chuyen');
-                if (chkDDiChuyen) chkDDiChuyen.checked = false;
             } else if (name === 'D4' && value) {
                 userLocks['chk_D3'] = Date.now() + 2500;
                 const chkD3 = document.getElementById('chk_D3');
                 if (chkD3) chkD3.checked = false;
-            } else if (name === 'D_di_chuyen' && value) {
-                const chkD3 = document.getElementById('chk_D3');
-                if (chkD3 && chkD3.checked) {
-                    const chkDDiChuyen = document.getElementById('chk_D_di_chuyen');
-                    if (chkDDiChuyen) chkDDiChuyen.checked = false;
-                    return;
-                }
             } else if (['buff', 'phong_thu'].includes(name) && value) {
                 const combatCbs = ['buff', 'phong_thu'];
                 combatCbs.filter(k => k !== name).forEach(k => {
@@ -2784,8 +3020,35 @@ HTML_PAGE = """<!DOCTYPE html>
         }
 
         function onTabChanged(tab) {
-            sendAction('set_tab', {tab}, true);
-            setTimeout(fetchStatus, 150);
+            currentSelectedTab = tab;
+            
+            // 1. Phản hồi giao diện nút chọn tab ngay lập tức (Zero Latency)
+            const carousel = document.getElementById('ldCarousel');
+            if (carousel) {
+                carousel.querySelectorAll('.ld-pill').forEach(pill => {
+                    const nameSpan = pill.querySelector('span:last-child');
+                    if (nameSpan && nameSpan.innerText.trim() === String(tab).trim()) {
+                        pill.classList.add('active');
+                    } else {
+                        pill.classList.remove('active');
+                    }
+                });
+            }
+            const fsTabTitle = document.getElementById('fsTabTitle');
+            if (fsTabTitle) fsTabTitle.innerText = `Tab ${tab}`;
+
+            // 2. Nếu đang xem Màn hình giả lập, chuyển luồng nạp frame sang tab mới ngay lập tức
+            const pane = document.getElementById('tabPane_screen');
+            if (pane && pane.classList.contains('active')) {
+                isStreamBusy = false;
+                if (activeStreamTimer) clearTimeout(activeStreamTimer);
+                isStreamRunning = true;
+                fetchStreamNextFrame();
+            }
+
+            // 3. Gửi lệnh đổi tab về Tool Core
+            sendAction('set_tab', {tab}, false);
+            setTimeout(fetchStatus, 250);
         }
 
         function refreshTabs() {
@@ -2794,97 +3057,177 @@ HTML_PAGE = """<!DOCTYPE html>
             setTimeout(fetchStatus, 600);
         }
 
-        let currentStreamInterval = parseInt(localStorage.getItem('ts_stream_interval') || '500', 10);
-        if (![500, 1000, 2000].includes(currentStreamInterval)) currentStreamInterval = 500;
-        let isFetchingImg = false;
-        let lastFetchStartTime = 0;
+        let currentQuality = (function() {
+            try {
+                const s = localStorage.getItem('ts_stream_interval');
+                if (s === '0.5s' || s === '1s' || s === '2s') return s;
+                return '1s';
+            } catch(e) { return '1s'; }
+        })();
+        let isStreamRunning = true;
+        let currentSelectedTab = '0';
         let isFullscreenActive = false;
         let overlayHideTimer = null;
+        let activeStreamTimer = null;
+        let isStreamBusy = false;
+        let streamRetryCount = 0;
 
-        function setStreamSpeed(intervalMs) {
-            currentStreamInterval = intervalMs;
-            try { localStorage.setItem('ts_stream_interval', intervalMs); } catch(e) {}
-            
-            document.querySelectorAll('.speed-btn').forEach(btn => {
-                const speed = parseInt(btn.getAttribute('data-speed'), 10);
-                if (speed === intervalMs) {
-                    btn.classList.add('active');
-                } else {
-                    btn.classList.remove('active');
-                }
-            });
-
-            const speedLabel = intervalMs === 500 ? '0.5s (Mượt)' : (intervalMs === 1000 ? '1.0s (Chuẩn)' : '2.0s (Tiết kiệm)');
-            const fsBadge = document.getElementById('fsStreamBadge');
-            if (fsBadge) fsBadge.innerText = intervalMs === 500 ? '⚡ 0.5s' : (intervalMs === 1000 ? '⏱️ 1.0s' : '🌱 2.0s');
-            
-            const lbl = document.getElementById('streamSpeedText');
-            if (lbl) lbl.innerText = 'Đang truyền (' + speedLabel + ')';
-
-            const autoChk = document.getElementById('autoStream');
-            if (autoChk && autoChk.checked) {
-                if (streamTimer) clearInterval(streamTimer);
-                streamTimer = setInterval(refreshScreenshot, currentStreamInterval);
-            }
-        }
-
-        function refreshScreenshot() {
-            const now = Date.now();
-            // Nếu request cũ bị treo quá 3.5s (do điện thoại khóa màn hình hoặc ẩn tab), tự động giải phóng khóa
-            if (isFetchingImg && (now - lastFetchStartTime) < 3500) return;
-            
+        function startLiveStream() {
             const img = document.getElementById('screenImg');
             if (!img) return;
-            isFetchingImg = true;
-            lastFetchStartTime = now;
+            isStreamRunning = true;
+            isStreamBusy = false;
+            if (activeStreamTimer) clearTimeout(activeStreamTimer);
 
-            const newImg = new Image();
-            newImg.onload = function() {
-                img.src = newImg.src;
-                isFetchingImg = false;
-            };
-            newImg.onerror = function() {
-                isFetchingImg = false;
-            };
-            newImg.src = '/api/screenshot?t=' + now;
+            const dot = document.getElementById('streamDot');
+            if (dot) dot.classList.add('live');
+            const lbl = document.getElementById('streamSpeedText');
+            const nameMap = {'0.5s': '0.5s (Nhanh)', '1s': '1.0s (Chuẩn)', '2s': '2.0s (Tiết Kiệm)'};
+            if (lbl) lbl.innerText = `Trực tiếp: ${nameMap[currentQuality] || currentQuality}`;
+            const btn = document.getElementById('btnStreamToggle');
+            if (btn) btn.innerText = 'Tạm Dừng';
+
+            fetchStreamNextFrame();
         }
 
-        // Tự động khôi phục luồng truyền ảnh ngay khi người dùng mở lại tab hoặc bật sáng màn hình điện thoại
-        function resumeLiveStream() {
-            isFetchingImg = false;
-            lastFetchStartTime = 0;
-            if (streamTimer) clearInterval(streamTimer);
-            const autoChk = document.getElementById('autoStream');
-            if (autoChk && autoChk.checked) {
-                streamTimer = setInterval(refreshScreenshot, currentStreamInterval);
+        function fetchStreamNextFrame() {
+            if (!isStreamRunning) return;
+            if (activeStreamTimer) clearTimeout(activeStreamTimer);
+
+            if (isStreamBusy) {
+                activeStreamTimer = setTimeout(fetchStreamNextFrame, 60);
+                return;
             }
-            refreshScreenshot();
-            fetchStatus();
+
+            isStreamBusy = true;
+            const nextImg = new Image();
+            const targetTab = currentSelectedTab || '0';
+            const url = '/api/screenshot?tab=' + encodeURIComponent(targetTab) + '&q=' + currentQuality + '&_t=' + Date.now();
+
+            // Timeout an toàn: Nếu mạng lag hoặc điện thoại background, tự động giải phóng sau 2.5s
+            const watchdogTimer = setTimeout(() => {
+                if (isStreamBusy) {
+                    isStreamBusy = false;
+                    if (isStreamRunning) {
+                        scheduleNextFrame(200);
+                    }
+                }
+            }, 2500);
+
+            nextImg.onload = () => {
+                clearTimeout(watchdogTimer);
+                isStreamBusy = false;
+                streamRetryCount = 0;
+                const mainImg = document.getElementById('screenImg');
+                if (mainImg && isStreamRunning) {
+                    mainImg.src = nextImg.src;
+                }
+                // Chu kỳ nghỉ bảo vệ 100% CPU máy tính: 0.5s (500ms ~ 2 FPS), 1s (1000ms ~ 1 FPS), 2s (2000ms ~ 0.5 FPS)
+                const delayMs = currentQuality === '0.5s' ? 500 : (currentQuality === '2s' ? 2000 : 1000);
+                if (isStreamRunning) {
+                    scheduleNextFrame(delayMs);
+                }
+            };
+
+            nextImg.onerror = () => {
+                clearTimeout(watchdogTimer);
+                isStreamBusy = false;
+                streamRetryCount++;
+                const retryDelay = streamRetryCount > 5 ? 1000 : 300;
+                if (isStreamRunning) {
+                    scheduleNextFrame(retryDelay);
+                }
+            };
+
+            nextImg.src = url;
         }
 
+        function scheduleNextFrame(delay) {
+            if (activeStreamTimer) clearTimeout(activeStreamTimer);
+            if (isStreamRunning) {
+                activeStreamTimer = setTimeout(fetchStreamNextFrame, delay);
+            }
+        }
+
+        function stopLiveStream() {
+            isStreamRunning = false;
+            isStreamBusy = false;
+            if (activeStreamTimer) clearTimeout(activeStreamTimer);
+            const dot = document.getElementById('streamDot');
+            if (dot) dot.classList.remove('live');
+            const lbl = document.getElementById('streamSpeedText');
+            if (lbl) lbl.innerText = 'Đã tạm dừng';
+            const btn = document.getElementById('btnStreamToggle');
+            if (btn) btn.innerText = 'Phát Lại';
+        }
+
+        function toggleLiveStream() {
+            if (isStreamRunning) {
+                stopLiveStream();
+            } else {
+                startLiveStream();
+            }
+        }
+
+        function resumeLiveStream() {
+            if (typeof fetchStatus === 'function') fetchStatus();
+            const pane = document.getElementById('tabPane_screen');
+            if (!pane || !pane.classList.contains('active')) return;
+            // Giải phóng sạch sẽ mọi cờ nghẽn khi app quay lại từ background
+            isStreamBusy = false;
+            if (activeStreamTimer) clearTimeout(activeStreamTimer);
+            isStreamRunning = true;
+            startLiveStream();
+        }
+
+        function setQuality(q, quiet) {
+            currentQuality = q;
+            try { localStorage.setItem('ts_stream_interval', q); } catch(e) {}
+            ['btnQ05', 'btnBarQ05'].forEach(id => {
+                const b = document.getElementById(id);
+                if (b) b.classList.toggle('active', q === '0.5s');
+            });
+            ['btnQ1', 'btnBarQ1'].forEach(id => {
+                const b = document.getElementById(id);
+                if (b) b.classList.toggle('active', q === '1s');
+            });
+            ['btnQ2', 'btnBarQ2'].forEach(id => {
+                const b = document.getElementById(id);
+                if (b) b.classList.toggle('active', q === '2s');
+            });
+            const fsBadge = document.getElementById('fsStreamBadge');
+            const badgeMap = {
+                '0.5s': '0.5s (Nhanh)',
+                '1s': '1.0s (Chuẩn)',
+                '2s': '2.0s (Tiết Kiệm)'
+            };
+            if (fsBadge) fsBadge.innerText = badgeMap[q] || q;
+            const lbl = document.getElementById('streamSpeedText');
+            if (lbl) lbl.innerText = `Trực tiếp: ${badgeMap[q] || q}`;
+            if (isStreamRunning) {
+                startLiveStream();
+            }
+            if (!quiet) {
+                const toastMap = {
+                    '0.5s': 'Đã chuyển sang chế độ 0.5s (Nhanh - 2 FPS)',
+                    '1s': 'Đã chuyển sang chế độ 1.0s (Chuẩn - 1 FPS)',
+                    '2s': 'Đã chuyển sang chế độ 2.0s (Tiết kiệm - 0.5 FPS)'
+                };
+                showToast(toastMap[q] || ('Đã đổi chế độ: ' + q));
+            }
+        }
+
+        // Bắt trọn vẹn TẤT CẢ các sự kiện khi người dùng quay lại web từ màn hình chính điện thoại
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'visible') {
                 resumeLiveStream();
+            } else {
+                stopLiveStream();
             }
         });
 
         window.addEventListener('pageshow', resumeLiveStream);
         window.addEventListener('focus', resumeLiveStream);
-
-        function toggleAutoStream(enable) {
-            if (streamTimer) clearInterval(streamTimer);
-            const dot = document.getElementById('streamDot');
-            const lbl = document.getElementById('streamSpeedText');
-            if (enable) {
-                streamTimer = setInterval(refreshScreenshot, currentStreamInterval);
-                if (dot) dot.classList.add('live');
-                const speedLabel = currentStreamInterval === 500 ? '0.5s (Mượt)' : (currentStreamInterval === 1000 ? '1.0s' : '2.0s');
-                if (lbl) lbl.innerText = 'Đang truyền (' + speedLabel + ')';
-            } else {
-                if (dot) dot.classList.remove('live');
-                if (lbl) lbl.innerText = 'Đã tạm dừng truyền';
-            }
-        }
 
         function toggleFullscreen(enable) {
             const card = document.getElementById('screenCard');
@@ -2927,89 +3270,9 @@ HTML_PAGE = """<!DOCTYPE html>
             }
         });
 
-        let lastScreenTapTime = 0;
-        function handleScreenTap(e) {
-            const now = Date.now();
-            if (now - lastScreenTapTime < 280) return; // Chặn double tap / lặp tap trên điện thoại
-            lastScreenTapTime = now;
-
-            if (e.target.closest && (e.target.closest('.fs-overlay-bar') || e.target.closest('button') || e.target.closest('.stream-ctrl-bar'))) {
-                return;
-            }
-
-            const img = document.getElementById('screenImg');
-            const box = document.getElementById('screenPreviewBox');
-            if (!img || !box) return;
-
-            if (isFullscreenActive) {
-                resetOverlayHideTimer();
-            }
-
-            const rect = img.getBoundingClientRect();
-            const nativeAR = 1280.0 / 720.0;
-            const elemW = rect.width;
-            const elemH = rect.height;
-            if (elemW <= 0 || elemH <= 0) return;
-
-            const elemAR = elemW / elemH;
-            let renderW = elemW;
-            let renderH = elemH;
-            let offsetLeft = 0;
-            let offsetTop = 0;
-
-            if (elemAR > nativeAR) {
-                // Pillarbox: dải đen hai bên trái - phải
-                renderH = elemH;
-                renderW = renderH * nativeAR;
-                offsetLeft = (elemW - renderW) / 2;
-            } else {
-                // Letterbox: dải đen trên - dưới
-                renderW = elemW;
-                renderH = renderW / nativeAR;
-                offsetTop = (elemH - renderH) / 2;
-            }
-
-            const clientX = e.clientX !== undefined ? e.clientX : (e.touches && e.touches[0] ? e.touches[0].clientX : null);
-            const clientY = e.clientY !== undefined ? e.clientY : (e.touches && e.touches[0] ? e.touches[0].clientY : null);
-            if (clientX === null || clientY === null) return;
-
-            const clickX = (clientX - rect.left) - offsetLeft;
-            const clickY = (clientY - rect.top) - offsetTop;
-
-            if (clickX >= 0 && clickX <= renderW && clickY >= 0 && clickY <= renderH) {
-                const realX = Math.round((clickX / renderW) * 1280);
-                const realY = Math.round((clickY / renderH) * 720);
-
-                sendAction('tap', { x: realX, y: realY }, false);
-
-                const boxRect = box.getBoundingClientRect();
-                const ripX = clientX - boxRect.left;
-                const ripY = clientY - boxRect.top;
-
-                const ripple = document.createElement('div');
-                ripple.className = 'touch-ripple';
-                ripple.style.left = (ripX - 16) + 'px';
-                ripple.style.top = (ripY - 16) + 'px';
-                box.appendChild(ripple);
-
-                const coord = document.createElement('div');
-                coord.className = 'touch-coord';
-                coord.innerText = `${realX}, ${realY}`;
-                coord.style.left = ripX + 'px';
-                coord.style.top = ripY + 'px';
-                box.appendChild(coord);
-
-                setTimeout(() => {
-                    ripple.remove();
-                    coord.remove();
-                }, 750);
-            }
-        }
-
         // Khởi động
         fetchStatus();
         setInterval(fetchStatus, 3000);
-        setStreamSpeed(currentStreamInterval);
 
         function updateBossElementBadge(elemName) {
             const badge = document.getElementById('boss_elem_badge');
@@ -3034,12 +3297,9 @@ HTML_PAGE = """<!DOCTYPE html>
         setInterval(updateRealtimeClock, 1000);
 
         document.addEventListener('DOMContentLoaded', () => {
-            const box = document.getElementById('screenPreviewBox');
-            if (box) {
-                box.addEventListener('click', handleScreenTap);
-            }
             updateBossElementBadge();
             updateRealtimeClock();
+            setQuality(currentQuality, true);
         });
     </script>
 </body>
@@ -3185,7 +3445,6 @@ class ToolWebRequestHandler(BaseHTTPRequestHandler):
                 "D_nhan_doi": app.var_D_nhan_doi.get() if hasattr(app, 'var_D_nhan_doi') else False,
                 "D3": app.var_D3.get() if hasattr(app, 'var_D3') else False,
                 "D4": app.var_D4.get() if hasattr(app, 'var_D4') else False,
-                "D_di_chuyen": app.var_D_di_chuyen.get() if hasattr(app, 'var_D_di_chuyen') else False,
                 "E_quan_su": app.var_E_quan_su.get() if hasattr(app, 'var_E_quan_su') else False,
                 "pause_D": app.var_pause_D.get() if hasattr(app, 'var_pause_D') else False,
                 "buff": app.var_buff.get() if hasattr(app, 'var_buff') else False,
@@ -3259,9 +3518,10 @@ class ToolWebRequestHandler(BaseHTTPRequestHandler):
                 "checkboxes": checkboxes,
                 "combos": combos,
                 "inputs": inputs,
-                "logs": getattr(app, 'recent_logs', [])[-150:],
+                "logs": getattr(app, 'recent_logs', [])[-40:],
                 "local_ip": getattr(app, 'web_ip', get_local_ip()),
-                "port": getattr(app, 'web_port', 8082)
+                "port": getattr(app, 'web_port', 8082),
+                "update_info": getattr(app, 'update_info', None)
             }
             body = json.dumps(data, ensure_ascii=False).encode('utf-8')
             self.send_response(200)
@@ -3272,14 +3532,71 @@ class ToolWebRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
+        elif parsed == "/api/stream":
+            query_str = urllib.parse.urlparse(self.path).query
+            query_params = urllib.parse.parse_qs(query_str) if query_str else {}
+            tab_val = query_params.get("tab", [None])[0]
+            if tab_val is not None and str(tab_val).strip() != "":
+                tab_idx = str(tab_val).strip()
+            else:
+                _, tab_idx_app = app._get_selected_ld_info() if hasattr(app, '_get_selected_ld_info') else (None, "0")
+                tab_idx = str(tab_idx_app) if tab_idx_app is not None else "0"
+
+            quality_val = query_params.get("q", ["1s"])[0]
+
+            self.send_response(200)
+            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate, pre-check=0, post-check=0, max-age=0")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+
+            try:
+                last_sent = None
+                start_stream_time = time.time()
+                while time.time() - start_stream_time < 300:
+                    frame = _stream_manager.get_frame(app, tab_idx, quality_mode=quality_val)
+                    if frame and frame != last_sent:
+                        part = (
+                            b"--frame\r\n"
+                            b"Content-Type: image/jpeg\r\n"
+                            b"Content-Length: " + str(len(frame)).encode('ascii') + b"\r\n\r\n"
+                            + frame + b"\r\n"
+                        )
+                        self.wfile.write(part)
+                        self.wfile.flush()
+                        last_sent = frame
+                    time.sleep(0.02)
+            except Exception:
+                pass
+            return
+
         elif parsed == "/api/screenshot":
-            img_bytes = get_screenshot_bytes(app)
+            query_str = urllib.parse.urlparse(self.path).query
+            query_params = urllib.parse.parse_qs(query_str) if query_str else {}
+            tab_val = query_params.get("tab", [None])[0]
+            if tab_val is not None and str(tab_val).strip() != "":
+                tab_idx = str(tab_val).strip()
+            else:
+                _, tab_idx_app = app._get_selected_ld_info() if hasattr(app, '_get_selected_ld_info') else (None, "0")
+                tab_idx = str(tab_idx_app) if tab_idx_app is not None else "0"
+            quality_val = query_params.get("q", ["1s"])[0]
+
+            img_bytes = _stream_manager.get_frame(app, tab_idx, quality_mode=quality_val)
+            if not img_bytes:
+                img_bytes = get_screenshot_bytes(app)
+
             try:
                 if img_bytes:
                     self.send_response(200)
                     self.send_header("Content-Type", "image/jpeg")
                     self.send_header("Content-Length", str(len(img_bytes)))
                     self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+                    self.send_header("Pragma", "no-cache")
+                    self.send_header("Expires", "0")
+                    self.send_header("Access-Control-Allow-Origin", "*")
                     self.send_header("Connection", "close")
                     self.end_headers()
                     self.wfile.write(img_bytes)
@@ -3291,6 +3608,8 @@ class ToolWebRequestHandler(BaseHTTPRequestHandler):
                     self.send_response(200)
                     self.send_header("Content-Type", "image/svg+xml")
                     self.send_header("Content-Length", str(len(svg)))
+                    self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+                    self.send_header("Access-Control-Allow-Origin", "*")
                     self.send_header("Connection", "close")
                     self.end_headers()
                     self.wfile.write(svg)
@@ -3366,17 +3685,7 @@ class ToolWebRequestHandler(BaseHTTPRequestHandler):
                     msg = f"Đã chọn tab: {tab}"
 
             elif action == "tap":
-                x = req.get("x")
-                y = req.get("y")
-                tab, idx = app._get_selected_ld_info() if hasattr(app, '_get_selected_ld_info') else (None, None)
-                if idx is not None and x is not None and y is not None:
-                    dnconsole_path = os.path.join(app.ld_path, "ldconsole.exe")
-                    if not os.path.exists(dnconsole_path):
-                        dnconsole_path = os.path.join(app.ld_path, "dnconsole.exe")
-                    app._exec_cmd([dnconsole_path, "adb", "--index", str(idx), "--command", f"shell input tap {int(x)} {int(y)}"])
-                    msg = f"👆 Đã chạm ({int(x)}, {int(y)})"
-                else:
-                    msg = "Vui lòng chọn tab LDPlayer trước"
+                msg = "Chế độ xem trực tiếp (Đã khóa thao tác chạm để an toàn)"
 
             elif action == "set_switch":
                 s_name = req.get("name")
@@ -3413,8 +3722,6 @@ class ToolWebRequestHandler(BaseHTTPRequestHandler):
                             if hasattr(app, '_update_card_E_visibility'):
                                 app._update_card_E_visibility()
                             app._on_D2_toggled()
-                        elif cb_name in ["D_di_chuyen", "var_D_di_chuyen"] and hasattr(app, '_on_D_di_chuyen_toggled'):
-                            app._on_D_di_chuyen_toggled()
                         elif cb_name in ["B_doi", "var_B_doi"] and hasattr(app, '_update_card_E_visibility'):
                             app._update_card_E_visibility()
                             app._on_checkbox_toggled()
@@ -3965,42 +4272,6 @@ def start_cloudflare_tunnel(app):
                     return
             except Exception as e:
                 app.log_error(f"Lỗi kết nối {s_name}: {e}")
-
-        # 3. DỰ PHÒNG CUỐI: Cloudflare Quick Tunnel (cloudflared.exe)
-        if bin_path and os.path.exists(bin_path):
-            try:
-                cmd = [bin_path, "tunnel", "--url", f"http://127.0.0.1:{port}", "--no-autoupdate"]
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    encoding='utf-8',
-                    errors='ignore',
-                    creationflags=creation_flags
-                )
-                app.cloudflared_proc = proc
-
-                found_url = None
-                for line in iter(proc.stdout.readline, ''):
-                    if not line:
-                        break
-                    if not found_url:
-                        match = re.search(r'(https://[a-zA-Z0-9-]+\.trycloudflare\.com)', line)
-                        if match:
-                            found_url = match.group(1)
-                            app.public_web_url = found_url
-                            app.log_info(f"🚀 [4G / CLOUDFLARE LINK] Sẵn sàng: {found_url}")
-                            if hasattr(app, '_update_web_url_ui'):
-                                app.after(0, app._update_web_url_ui, found_url, True)
-
-                proc.poll()
-                app.log_warning("⚠️ [4G / ONLINE] Đường truyền Cloudflare Tunnel đã dừng.")
-                if hasattr(app, '_on_tunnel_failed'):
-                    app.after(0, app._on_tunnel_failed)
-                return
-            except Exception as e:
-                app.log_error(f"Lỗi khởi động Cloudflare Tunnel: {e}")
 
         if hasattr(app, '_on_tunnel_failed'):
             app.after(0, app._on_tunnel_failed)
