@@ -5026,21 +5026,29 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
 
         return is_no_active_switch_on()
 
-    def _run_card_E_action_1(self, dnconsole_path: str, tab_index: str, list_B: list):
+    def _run_card_E_action_1(
+        self, dnconsole_path: str, tab_index: str, list_B: list, 
+        assign_quan_su: bool = True, 
+        log_tag: str = "Card E - Thao Tác 1",
+        stop_check=None
+    ):
         """
         THAO TÁC 1 CỦA CARD TỔ ĐỘI:
-        Kích hoạt DUY NHẤT khi ô 'Tổ Đội' (var_D2) ở Card D được kích hoạt (cho cả 40 NPC và Nhị Kiều).
-        Bổ sung tính năng quản lý danh sách đã mời (already_invited) thông minh.
+        Kích hoạt khi ô 'Tổ Đội' (var_D2) ở Card D được kích hoạt (cho cả 40 NPC và Nhị Kiều).
+        Hỗ trợ gọi trực tiếp cho các mốc kiểm tra đội hình trước/sau cổng Lôi Đài 40 NPC.
         """
-        if hasattr(self, 'var_D2') and not self.var_D2.get():
-            self.after(0, self.log_info, "ℹ️ [CARD TỔ ĐỘI - Thao Tác 1] Ô 'Tổ Đội' (Card D) KHÔNG được tích ➔ Bỏ qua Card E.")
-            return
-        if self._should_stop_card_E() or not list_B: return
+        if stop_check is None:
+            stop_check = self._should_stop_card_E
 
-        self.after(0, self.log_info, f"🚀 [CARD TỔ ĐỘI - Thao Tác 1] Khởi chạy quy trình mời {len(list_B)} nhân vật trong Danh Sách B: {', '.join(list_B)}...")
+        if hasattr(self, 'var_D2') and not self.var_D2.get():
+            self.after(0, self.log_info, f"ℹ️ [{log_tag}] Ô 'Tổ Đội' (Card D) KHÔNG được tích ➔ Bỏ qua.")
+            return
+        if stop_check() or not list_B: return
+
+        self.after(0, self.log_info, f"🚀 [{log_tag}] Khởi chạy quy trình mời {len(list_B)} nhân vật trong Danh Sách B: {', '.join(list_B)}...")
 
         # ---------------- GIAI ĐOẠN 1: MỞ GIAO DIỆN TỔ ĐỘI ----------------
-        if self._should_stop_card_E(): return
+        if stop_check(): return
         # 1. Đóng Quảng Cáo / Thông Báo Nổi
         lx_x, lx_y = self._find_template_on_screen(dnconsole_path, tab_index, "card_top/login/login_x.png", threshold=0.75, region=(990, 50, 1165, 200))
         if lx_x is not None and lx_y is not None:
@@ -5049,40 +5057,47 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             time.sleep(0.4)
 
         # 2. Quét Mở Giao Diện Đội
-        if self._should_stop_card_E(): return
-        if not self._open_team_panel(dnconsole_path, tab_index, log_tag="Card E - Thao Tác 1", stop_check=self._should_stop_card_E):
+        if stop_check(): return
+        if not self._open_team_panel(dnconsole_path, tab_index, log_tag=log_tag, stop_check=stop_check):
             return
 
         # ---------------- VÒNG LẶP MỜI & KIỂM TRA TỔ ĐỘI ----------------
-        while not self._should_stop_card_E():
+        while not stop_check():
             # 3. Nhận Diện Người Trong Tổ Đội
-            if self._should_stop_card_E(): return
-            self.after(0, self.log_info, "👁️ [Thao Tác 1] Quét kiểm tra độ đầy đủ của các nhân vật trong Danh Sách B...")
+            if stop_check(): return
+            self.after(0, self.log_info, f"👁️ [{log_tag}] Quét kiểm tra độ đầy đủ của các nhân vật trong Danh Sách B...")
             present_members, missing_list, target_count = self._scan_team_members_presence(
-                dnconsole_path, tab_index, list_B, stop_check=self._should_stop_card_E, mode="40npc"
+                dnconsole_path, tab_index, list_B, stop_check=stop_check, mode="40npc"
             )
-            if self._should_stop_card_E(): return
+            if stop_check(): return
 
             # 4. Xử Lý Kết Quả Kiểm Tra (Đủ 4 thành viên là xác nhận hoàn thành)
             if len(present_members) >= target_count:
-                self.after(0, self.log_info, f"✅ [Thao Tác 1] Tổ đội đã ĐỦ {len(present_members)}/{target_count} thành viên ({', '.join(present_members)})!")
+                self.after(0, self.log_info, f"✅ [{log_tag}] Tổ đội đã ĐỦ {len(present_members)}/{target_count} thành viên ({', '.join(present_members)})!")
 
-                # Chỉ định Quân Sư: Kích hoạt do 40 NPC / Nhị Kiều gọi khi đã chọn tướng ở Menu Quân Sư (Hàng 2)
-                quan_su_char = self.combo_E_quan_su.get() if hasattr(self, 'combo_E_quan_su') else ""
-                if quan_su_char and quan_su_char != "(Trống)":
-                    self._assign_quan_su_when_panel_opened(dnconsole_path, tab_index, quan_su_char, log_tag="Card E - Quân Sư", stop_check=self._should_stop_card_E)
+                # Chỉ định Quân Sư: Kích hoạt khi assign_quan_su=True
+                if assign_quan_su:
+                    quan_su_char = self.combo_E_quan_su.get() if hasattr(self, 'combo_E_quan_su') else ""
+                    if quan_su_char and quan_su_char != "(Trống)":
+                        self._assign_quan_su_when_panel_opened(
+                            dnconsole_path, tab_index, quan_su_char, 
+                            log_tag=f"Quân Sư - {log_tag}", 
+                            stop_check=stop_check
+                        )
+                else:
+                    self.after(0, self.log_info, f"ℹ️ [{log_tag}] Đội hình đã đủ ➔ Bỏ qua gán Quân Sư theo quy trình.")
 
                 # Đóng giao diện Đội & thu gọn menu
-                if self._should_stop_card_E(): return
-                self._close_team_panel(dnconsole_path, tab_index, log_tag="Card E - Thao Tác 1", stop_check=self._should_stop_card_E)
+                if stop_check(): return
+                self._close_team_panel(dnconsole_path, tab_index, log_tag=log_tag, stop_check=stop_check)
 
-                self.after(0, self.log_info, "🚀 [Card E - Thao Tác 1] Hoàn tất dứt điểm quy trình Tổ Đội ➔ Trả quyền điều khiển cho 40 NPC / Nhị Kiều.")
+                self.after(0, self.log_info, f"🚀 [{log_tag}] Hoàn tất dứt điểm quy trình Tổ Đội ➔ Tiếp tục bước tiếp theo.")
                 break
 
             else:
                 self._invite_missing_members_when_panel_opened(
                     dnconsole_path, tab_index, missing_list, 
-                    log_tag="Card E - Thao Tác 1", stop_check=self._should_stop_card_E
+                    log_tag=log_tag, stop_check=stop_check
                 )
 
     def _run_card_E_action_2(self, dnconsole_path: str, tab_index: str, list_B: list):
@@ -5762,23 +5777,6 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                 break
             time.sleep(0.3)
         return True
-
-    def _assign_quan_su_in_team(self, dnconsole_path: str, tab_index: str):
-        """Thao tác gán Quân Sư trong giao diện Đội cho Card D (Nhị Kiều Mốc Auto - Đỉnh Tháp 10)"""
-        if self._should_stop_card_D(): return
-
-        if hasattr(self, 'var_D2') and not self.var_D2.get():
-            self.after(0, self.log_info, "ℹ️ [Quân Sư - Nhị Kiều Lần 1] Ô 'Tổ Đội' KHÔNG được tích ➔ Bỏ qua chỉ định Quân Sư Lần 1 (Đỉnh Tháp 10).")
-            return
-
-        quan_su_char = self.combo_E_quan_su.get() if hasattr(self, 'combo_E_quan_su') else ""
-        if not quan_su_char or quan_su_char == "(Trống)":
-            self.after(0, self.log_info, "ℹ️ [Quân Sư - Nhị Kiều] Menu 'Quân Sư' (Card E) để '(Trống)' ➔ Bỏ qua gán Quân Sư, giữ nguyên quân sư hiện tại.")
-            return
-
-        self._open_team_panel(dnconsole_path, tab_index, log_tag="Quân Sư - Nhị Kiều", stop_check=self._should_stop_card_D)
-        self._assign_quan_su_when_panel_opened(dnconsole_path, tab_index, quan_su_char, log_tag="Quân Sư - Nhị Kiều", stop_check=self._should_stop_card_D)
-        self._close_team_panel(dnconsole_path, tab_index, log_tag="Quân Sư - Nhị Kiều", stop_check=self._should_stop_card_D)
 
     def _execute_card_d_buff_cycle(self, dnconsole_path: str, tab_index: str, log_tag: str = "40 NPC / Nhị Kiều", is_nhi_kieu: bool = False, active_skill: str = "Buff HP / SP"):
         """Thực thi Chuỗi Buff (Cơ chế Hồi Sinh Trọng Điểm Thông Minh) lặp lại liên tục cho 40 NPC và Nhị Kiều"""
@@ -6531,9 +6529,18 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             if self._should_stop_card_D(): return
             self.after(0, self.log_info, f"🎯 [Card D - 40 NPC - Bước 1] Đã đến mốc hẹn giờ {time_val}!")
 
-            # 2. Kiểm Tra Đủ Thành Viên Tổ Đội & Gán Quân Sư Lần 1
+            # BƯỚC 2: Kiểm Tra Đội Trước Khi vào Cổng Lôi Đài (Không cần gán quân sư)
             if self._should_stop_card_D(): return
-            self._check_team_and_assign_quan_su(dnconsole_path, tab_index, log_tag="Card D - 40 NPC - Lần 1")
+            if hasattr(self, 'var_D2') and self.var_D2.get():
+                list_B = list(getattr(self, 'list_E_B', []))
+                if list_B:
+                    self.after(0, self.log_info, "🚀 [Card D - 40 NPC - Bước 2] Khởi chạy kiểm tra & mời tổ đội (Chuẩn Card E, Không gán Quân Sư)...")
+                    self._run_card_E_action_1(
+                        dnconsole_path, tab_index, list_B, 
+                        assign_quan_su=False, 
+                        log_tag="Card D - 40 NPC - Bước 2",
+                        stop_check=self._should_stop_card_D
+                    )
             if self._should_stop_card_D(): return
 
             # BƯỚC 3 (Vào Lôi Đài):
@@ -6567,9 +6574,18 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                     break
                 if self._sleep_card_D(0.5): return
 
-            # BƯỚC 4: Kiểm tra Đội & Gán Quân Sư Lần 2 (Sau khi đã vào bản đồ Lôi Đài)
+            # BƯỚC 4: Kiểm Tra Đội & Gán Quân Sư
             if self._should_stop_card_D(): return
-            self._check_team_and_assign_quan_su(dnconsole_path, tab_index, log_tag="Card D - 40 NPC - Bước 4")
+            if hasattr(self, 'var_D2') and self.var_D2.get():
+                list_B = list(getattr(self, 'list_E_B', []))
+                if list_B:
+                    self.after(0, self.log_info, "🚀 [Card D - 40 NPC - Bước 4] Khởi chạy kiểm tra & mời tổ đội (Chuẩn Card E, Có gán Quân Sư)...")
+                    self._run_card_E_action_1(
+                        dnconsole_path, tab_index, list_B, 
+                        assign_quan_su=True, 
+                        log_tag="Card D - 40 NPC - Bước 4",
+                        stop_check=self._should_stop_card_D
+                    )
             if self._should_stop_card_D(): return
 
             # BƯỚC 5 (Vào trận đầu tiên - 9 Thao tác):
@@ -7347,58 +7363,6 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             else:
                 self.after(0, self.log_info, f"ℹ️ [{mode_name} - Tầng {loop_idx}] Ô 'Tổ Đội' không được tích ➔ Bỏ qua kiểm tra đội giữa tầng.")
 
-    def _check_team_and_assign_quan_su(self, dnconsole_path: str, tab_index: str, log_tag: str = "Tổ Đội & Quân Sư", stop_check=None):
-        """
-        Hàm dùng chung kiểm tra đủ đội hình & Chỉ định Quân Sư (Dùng cho cả Nhị Kiều & 40 NPC):
-        - Kiểm tra ô 'Tổ Đội' (var_D2). Nếu không tích -> bỏ qua 100%.
-        - Mở giao diện Đội 1 LẦN DUY NHẤT: Quét card_b/b_doi.png (85%, ROI 735, 405, 1280, 720).
-        - Kiểm tra các nhân vật trong Danh Sách B qua hàm dùng chung _scan_team_members_presence.
-        - Nếu thiếu người: Gọi _invite_missing_members_when_panel_opened ngay trên bảng Đội đang mở (có vuốt thông minh).
-        - Sau khi mời xong (hoặc nếu đã đủ sẵn): Gán Quân Sư ngay trong bảng Đội đang mở (nếu có chọn tướng).
-        - Đóng bảng Đội 1 LẦN DUY NHẤT!
-        """
-        if stop_check is None:
-            stop_check = self._should_stop_card_D
-        if stop_check(): return
-
-        # Cả kiểm tra đội và chỉ định Quân Sư đều yêu cầu ô 'Tổ Đội' (var_D2) phải được tích
-        if hasattr(self, 'var_D2') and not self.var_D2.get():
-            self.after(0, self.log_info, f"ℹ️ [{log_tag}] Ô 'Tổ Đội' KHÔNG được tích ➔ Bỏ qua kiểm tra tổ đội & chỉ định Quân Sư.")
-            return
-
-        list_B = list(getattr(self, 'list_E_B', []))
-        if not list_B:
-            return
-
-        self.after(0, self.log_info, f"👁️ [{log_tag}] Mở bảng Đội kiểm tra & điều phối tổ đội ({len(list_B)} thành viên: {', '.join(list_B)})...")
-        if not self._open_team_panel(dnconsole_path, tab_index, log_tag=log_tag, stop_check=stop_check):
-            return
-        if stop_check(): return
-
-        present_members, missing_members, target_count = self._scan_team_members_presence(dnconsole_path, tab_index, list_B, stop_check=stop_check)
-
-        if len(present_members) < target_count:
-            self.after(0, self.log_info, f"⚠️ [{log_tag}] Đội chưa đủ {target_count} người (Hiện có: {len(present_members)}, Thiếu: {', '.join(missing_members)}) ➔ Mời ngay tại chỗ (có vuốt thông minh)...")
-            self._invite_missing_members_when_panel_opened(dnconsole_path, tab_index, missing_members, log_tag=log_tag, stop_check=stop_check)
-            if stop_check(): return
-            # Quét kiểm tra lại lần cuối sau khi mời
-            present_members, missing_members, target_count = self._scan_team_members_presence(dnconsole_path, tab_index, list_B, stop_check=stop_check)
-
-        if len(present_members) >= target_count:
-            self.after(0, self.log_info, f"✅ [{log_tag}] Đội hình đã ĐỦ {len(present_members)}/{target_count} thành viên ({', '.join(present_members)})!")
-        else:
-            self.after(0, self.log_info, f"⚠️ [{log_tag}] Sau khi mời, đội chưa đủ {target_count} người (Hiện có: {len(present_members)}/{target_count}).")
-
-        # Gán Quân Sư ngay khi bảng Đội đang mở sẵn (chỉ gán nếu nhân vật Quân Sư có mặt trong đội hình)
-        quan_su_char = self.combo_E_quan_su.get() if hasattr(self, 'combo_E_quan_su') else ""
-        if quan_su_char and quan_su_char != "(Trống)":
-            if quan_su_char in present_members or len(present_members) >= target_count:
-                self._assign_quan_su_when_panel_opened(dnconsole_path, tab_index, quan_su_char, log_tag=f"Quân Sư - {log_tag}", stop_check=stop_check)
-            else:
-                self.after(0, self.log_info, f"ℹ️ [{log_tag}] Quân Sư '{quan_su_char}' chưa có mặt trong đội ➔ Giữ nguyên quân sư hiện tại.")
-
-        self._close_team_panel(dnconsole_path, tab_index, log_tag=log_tag, stop_check=stop_check)
-
     def _detect_nhi_kieu_start_position(self, dnconsole_path: str, tab_index: str) -> str:
         """
         Quét tuần tự 4 mốc ảnh tại góc trên bên phải màn hình (ROI 1060, 0, 1280, 40, ngưỡng 80%):
@@ -7449,15 +7413,15 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
           + Đỉnh Tháp -> Bỏ qua toàn bộ Chặng 1, chạy thẳng từ Đỉnh Tháp 10.
         - Chặng 1 (Trệt / Đại Điện / Tháp ➔ Đỉnh 10):
           + Chạy theo vị trí nhận diện đến khi thấy d_dinh.png ➔ Hoãn 5.0s.
-        - PHẦN 1: Tại Đỉnh Tháp 10 (gặp d_dinh.png):
+        - PHẦN 1: Tại Đỉnh Tháp 10:
           + Nếu chọn 'Đánh Tay' + tích 'Tổ Đội': Bỏ qua Quân Sư 1 và Kỹ Năng Đỉnh 10 để người chơi tự đánh tay.
-          + Nếu là các kỹ năng khác: Gán Quân Sư lần 1 (nếu có chọn tướng) ➔ Kích hoạt Kỹ Năng Auto Đỉnh 10.
+          + Nếu là các kỹ năng khác: Kiểm tra Đội, mời nếu thiếu & gán Quân Sư lần 1 (Card E) ➔ Hoãn 5.0s ➔ Kích hoạt Kỹ Năng Auto Đỉnh 10.
         - PHẦN 2: Chuyển tiếp Tháp 11:
-          + Quét d_thap.png mỗi 1.0s. Hỗ trợ Realtime Switch: nếu đổi kỹ năng sang Buff/Kính/Kết Giới sẽ quay lại chạy bước 1.3.
-          + Thấy d_thap.png ➔ Báo Telegram. Nếu 'Đánh Tay' + 'Tổ Đội' ➔ Bỏ qua hoãn 20s (STT 2.3); ngược lại hoãn 20.0s.
+          + Quét d_thap.png mỗi 1.0s (Ưu tiên quét tháp trước, hỗ trợ Realtime Switch đổi chiêu giữa chừng tại Đỉnh 10).
+          + Thấy d_thap.png ➔ Báo Telegram. Nếu 'Đánh Tay' + 'Tổ Đội' ➔ Bỏ qua hoãn 20s; ngược lại hoãn 20.0s.
         - PHẦN 3: Xử lý tại Tháp 11:
           + Nếu 'Đánh Tay' + 'Tổ Đội': Bỏ qua PHẦN 3.
-          + Nếu các kỹ năng khác: Mở Đội, kiểm tra thành viên list_B (nếu thiếu mời qua Card E), gán Quân Sư lần 2 trong cùng 1 lần mở.
+          + Nếu các kỹ năng khác: Kiểm tra Đội, mời nếu thiếu & gán Quân Sư lần 2 (Card E).
         - Hoãn đệm 5.0s trước khi leo Chặng 2.
         - PHẦN 4: Chặng 2 (Tháp 11 ➔ Tháp 14): Chạy vòng lặp Giai đoạn 4 ➔ 7 đúng 3 lượt ➔ Hoàn Thành Nhị Kiều!
         """
@@ -7472,7 +7436,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         if start_pos == "DINH_THAP":
             start_desc = "Đỉnh Tháp 10"
             self.after(0, self.log_info, f"🏰 [{tag_log}] Đã ở Đỉnh Tháp 10 ➔ Bỏ qua toàn bộ Chặng 1, chạy thẳng Đỉnh Tháp 10 & Chuyển tiếp Tháp 11!")
-            self.after(0, self.log_info, f"⏳ [{tag_log}] Đã ở Đỉnh Tháp 10 ➔ Hoãn 5.0s (STT 1.2)...")
+            self.after(0, self.log_info, f"⏳ [{tag_log}] Đã ở Đỉnh Tháp 10 ➔ Hoãn 5.0s trước khi chuyển tiếp Tháp 11...")
             if self._sleep_card_D(5.0): return
         else:
             # Xác định các giai đoạn cần chạy ở Chặng 1
@@ -7499,16 +7463,25 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             self.after(0, self.log_info, f"⏳ [{tag_log}] Đã lên Đỉnh Tháp 10 ➔ Hoãn 5.0s trước khi thao tác Quân Sư...")
             if self._sleep_card_D(5.0): return
 
-        # Hàm con nội bộ thực thi Bước 1.3 -> 1.8 tại Đỉnh Tháp 10
+        # Hàm con nội bộ thực thi tại Đỉnh Tháp 10
         def _execute_dinh_10_actions() -> bool:
-            # ---------------- THAO TÁC QUÂN SƯ LẦN 1 (ĐỈNH THÁP 10) ----------------
+            # ---------------- THAO TÁC QUÂN SƯ LẦN 1 (ĐỈNH THÁP 10 - CARD E) ----------------
             if hasattr(self, 'var_D2') and self.var_D2.get():
-                self.after(0, self.log_info, f"👑 [{tag_log}] Bắt đầu Thao tác Quân Sư lần 1 (Đỉnh Tháp 10)...")
-                self._assign_quan_su_in_team(dnconsole_path, tab_index)
-                if self._should_stop_card_D(): return True
-                # Hoãn 5 giây sau khi thao tác quân sư lần 1 xong
-                self.after(0, self.log_info, f"⏳ [{tag_log}] Hoãn 5.0s sau Quân Sư lần 1 trước khi kích hoạt Kỹ Năng Auto...")
-                if self._sleep_card_D(5.0): return True
+                list_B = list(getattr(self, 'list_E_B', []))
+                if list_B:
+                    self.after(0, self.log_info, f"👑 [{tag_log}] Khởi chạy kiểm tra Đội & Gán Quân Sư lần 1 (Đỉnh Tháp 10 - Card E)...")
+                    self._run_card_E_action_1(
+                        dnconsole_path, tab_index, list_B,
+                        assign_quan_su=True,
+                        log_tag=f"{tag_log} - Đỉnh 10",
+                        stop_check=self._should_stop_card_D
+                    )
+                    if self._should_stop_card_D(): return True
+                    # Hoãn 5 giây sau khi thao tác quân sư lần 1 xong
+                    self.after(0, self.log_info, f"⏳ [{tag_log}] Hoãn 5.0s sau Quân Sư lần 1 trước khi kích hoạt Kỹ Năng Auto...")
+                    if self._sleep_card_D(5.0): return True
+                else:
+                    self.after(0, self.log_warning, f"⚠️ [{tag_log}] Ô 'Tổ Đội' được tích nhưng Danh Sách B (Card E) đang trống! Bỏ qua kiểm tra đội & Quân Sư lần 1.")
             else:
                 self.after(0, self.log_info, f"ℹ️ [{tag_log}] Ô 'Tổ Đội' KHÔNG được tích ➔ Bỏ qua Thao tác Quân Sư lần 1 (Đỉnh Tháp 10).")
 
@@ -7524,7 +7497,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         already_executed_dinh10 = False
 
         if is_danh_tay and has_to_doi:
-            self.after(0, self.log_info, f"ℹ️ [{tag_log}] Đang chọn 'Đánh Tay' & có tích 'Tổ Đội' ➔ Bỏ qua Quân Sư lần 1 và Kỹ Năng Đỉnh 10 (Bước 1.3 - 1.8), chuyển thẳng sang quét Tháp 11...")
+            self.after(0, self.log_info, f"ℹ️ [{tag_log}] Đang chọn 'Đánh Tay' & có tích 'Tổ Đội' ➔ Bỏ qua Quân Sư lần 1 và Kỹ Năng Đỉnh 10, chuyển thẳng sang quét Tháp 11...")
         else:
             if _execute_dinh_10_actions(): return
             already_executed_dinh10 = True
@@ -7532,15 +7505,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         # ---------------- PHẦN 2: CHUYỂN TIẾP THÁP 11 ----------------
         self.after(0, self.log_info, f"👁️ [{tag_log}] Quét tìm 'card_d/nhikieu/d_thap.png' (80%, ROI 1060, 0, 1280, 40) mỗi 1.0s...")
         while not self._should_stop_card_D():
-            # Giám sát đổi kỹ năng realtime từ 'Đánh Tay' sang Buff HP/SP, Linh Kính, Kết Giới
-            if not already_executed_dinh10:
-                curr_sk = self.var_D_skill.get() if hasattr(self, 'var_D_skill') else "Buff HP / SP"
-                if curr_sk != "Đánh Tay":
-                    self.after(0, self.log_info, f"🔄 [{tag_log} - Realtime] Phát hiện đổi kỹ năng từ 'Đánh Tay' sang '{curr_sk}' ➔ Kích hoạt lại từ Bước 1.3 (Quân Sư 1 & Kỹ Năng Đỉnh 10)!")
-                    if _execute_dinh_10_actions(): return
-                    already_executed_dinh10 = True
-                    self.after(0, self.log_info, f"👁️ [{tag_log}] Hoàn tất Đỉnh 10 ➔ Tiếp tục quét tìm 'card_d/nhikieu/d_thap.png'...")
-
+            # 1. ƯU TIÊN 1: Quét tìm d_thap.png TRƯỚC
             t11_x, t11_y = self._find_template_on_screen(
                 dnconsole_path, tab_index, "card_d/nhikieu/d_thap.png",
                 threshold=0.80, region=(1060, 0, 1280, 40)
@@ -7555,6 +7520,16 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                     delay_seconds=3.0
                 )
                 break
+
+            # 2. ƯU TIÊN 2: Nếu chưa thấy d_thap.png (vẫn đang ở Đỉnh 10) ➔ Giám sát đổi kỹ năng realtime từ 'Đánh Tay' sang chiêu khác
+            if not already_executed_dinh10:
+                curr_sk = self.var_D_skill.get() if hasattr(self, 'var_D_skill') else "Buff HP / SP"
+                if curr_sk != "Đánh Tay":
+                    self.after(0, self.log_info, f"🔄 [{tag_log} - Realtime] Phát hiện đổi kỹ năng từ 'Đánh Tay' sang '{curr_sk}' ➔ Kích hoạt lại quy trình Đỉnh 10 (Kiểm tra Đội, Quân Sư 1 & Kỹ Năng Auto)!")
+                    if _execute_dinh_10_actions(): return
+                    already_executed_dinh10 = True
+                    self.after(0, self.log_info, f"👁️ [{tag_log}] Hoàn tất Đỉnh 10 ➔ Tiếp tục quét tìm 'card_d/nhikieu/d_thap.png'...")
+
             if self._sleep_card_D(1.0): return
 
         if self._should_stop_card_D(): return
@@ -7563,18 +7538,29 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         curr_sk_t11 = self.var_D_skill.get() if hasattr(self, 'var_D_skill') else "Buff HP / SP"
         is_dt_td = (curr_sk_t11 == "Đánh Tay" and hasattr(self, 'var_D2') and self.var_D2.get())
 
-        # STT 2.3: Đếm hoãn chuẩn bị Tháp 11 hoãn 20s (BỎ QUA NẾU LÀ ĐÁNH TAY + TỔ ĐỘI)
+        # Chuẩn bị Tháp 11: Đếm hoãn 20s (BỎ QUA NẾU LÀ ĐÁNH TAY + TỔ ĐỘI)
         if is_dt_td:
-            self.after(0, self.log_info, f"ℹ️ [{tag_log}] Đang chọn 'Đánh Tay' & có tích 'Tổ Đội' ➔ Bỏ qua hoãn 20s chuẩn bị Tháp 11 (STT 2.3).")
+            self.after(0, self.log_info, f"ℹ️ [{tag_log}] Đang chọn 'Đánh Tay' & có tích 'Tổ Đội' ➔ Bỏ qua hoãn 20s chuẩn bị Tháp 11.")
         else:
             self.after(0, self.log_info, f"⏳ [{tag_log}] Hoãn 20.0s chuẩn bị Tháp 11...")
             if self._sleep_card_D(20.0): return
 
-        # ---------------- PHẦN 3: KIỂM TRA ĐỦ ĐỘI & QUÂN SƯ LẦN 2 (THÁP 11) ----------------
+        # ---------------- PHẦN 3: KIỂM TRA ĐỦ ĐỘI & QUÂN SƯ LẦN 2 (THÁP 11 - CARD E) ----------------
         if is_dt_td:
             self.after(0, self.log_info, f"ℹ️ [{tag_log}] Đang chọn 'Đánh Tay' & có tích 'Tổ Đội' ➔ Bỏ qua PHẦN 3 (Kiểm tra Đội & Quân Sư lần 2)!")
         else:
-            self._check_team_and_assign_quan_su(dnconsole_path, tab_index, log_tag=f"{tag_log} - Tháp 11")
+            if hasattr(self, 'var_D2') and self.var_D2.get():
+                list_B = list(getattr(self, 'list_E_B', []))
+                if list_B:
+                    self.after(0, self.log_info, f"👑 [{tag_log}] Khởi chạy kiểm tra Đội & Gán Quân Sư lần 2 (Tháp 11 - Card E)...")
+                    self._run_card_E_action_1(
+                        dnconsole_path, tab_index, list_B,
+                        assign_quan_su=True,
+                        log_tag=f"{tag_log} - Tháp 11",
+                        stop_check=self._should_stop_card_D
+                    )
+                else:
+                    self.after(0, self.log_warning, f"⚠️ [{tag_log}] Ô 'Tổ Đội' được tích nhưng Danh Sách B (Card E) đang trống! Bỏ qua kiểm tra đội & Quân Sư lần 2.")
             if self._should_stop_card_D(): return
 
         # THỜI GIAN HOÃN 5.0S TRƯỚC CHẶNG 2: VẪN GIỮ LẠI CHO TẤT CẢ CÁC TRƯỜNG HỢP

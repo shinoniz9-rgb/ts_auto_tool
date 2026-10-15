@@ -154,12 +154,28 @@ def create_and_upload_release(new_ver, changelog, exe_path, token):
 
 def sync_git(new_ver, changelog):
     """Tự động commit và push phiên bản mới lên Git."""
+    print(f"\n[3/4] Đang đồng bộ commit và push lên GitHub (main)...")
     try:
-        subprocess.run(["git", "add", "version.py"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run(["git", "commit", "-m", f"release: cap nhat phien ban v{new_ver} - {changelog}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run(["git", "push", "github", "main"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception:
-        pass
+        files_to_add = [
+            "version.py", "main_v3.py", "publish_release.py",
+            "Tao_Loi_Tat_Desktop.bat", "launch_app.vbs", "AGENTS.md",
+            "assets/card_d/nhikieu/", "assets/card_e/"
+        ]
+        subprocess.run(["git", "add"] + files_to_add, check=False)
+        commit_res = subprocess.run(
+            ["git", "commit", "-m", f"release: cap nhat phien ban v{new_ver} - {changelog}"],
+            capture_output=True, text=True, encoding="utf-8"
+        )
+        if commit_res.stdout.strip():
+            print(f"-> Git commit: {commit_res.stdout.strip()}")
+        push_res = subprocess.run(
+            ["git", "push", "github", "main"],
+            capture_output=True, text=True, encoding="utf-8"
+        )
+        if push_res.stdout.strip() or push_res.stderr.strip():
+            print(f"-> Git push: {push_res.stdout.strip()} {push_res.stderr.strip()}")
+    except Exception as e:
+        print(f"⚠️ Lỗi đồng bộ Git: {e}")
 
 def main():
     if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
@@ -195,11 +211,17 @@ def main():
     # 2. Đóng gói EXE
     exe_path = build_exe()
 
-    # 3. Tạo Release và Upload
+    # 3. Đồng bộ Git trước để commit mới nhất nằm trên GitHub main
+    sync_git(new_ver, changelog)
+
+    # 4. Tạo Release và Upload
     create_and_upload_release(new_ver, changelog, exe_path, token)
 
-    # 4. Đồng bộ Git
-    sync_git(new_ver, changelog)
+    # 5. Kéo tag mới về repo local
+    try:
+        subprocess.run(["git", "fetch", "github", "--tags"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
 
     print("\n" + "=" * 66)
     print(f"🎉 CHÚC MỪNG! BẢN v{new_ver} ĐÃ ĐƯỢC PHÁT HÀNH THÀNH CÔNG LÊN GITHUB!")
