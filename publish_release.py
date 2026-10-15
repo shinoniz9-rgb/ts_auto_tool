@@ -157,7 +157,7 @@ def sync_git(new_ver, changelog):
     print(f"\n[3/4] Đang đồng bộ commit và push lên GitHub (main)...")
     try:
         files_to_add = [
-            "version.py", "main_v3.py", "publish_release.py",
+            "version.py", "main_v3.py", "publish_release.py", "updater.py",
             "Tao_Loi_Tat_Desktop.bat", "launch_app.vbs", "AGENTS.md",
             "assets/card_d/nhikieu/", "assets/card_e/"
         ]

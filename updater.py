@@ -112,38 +112,45 @@ def download_and_apply_update(download_url, progress_callback=None):
                 percent = int(downloaded * 100 / total_size)
                 progress_callback(percent, downloaded, total_size)
 
-    # Đảm bảo file tải về có dung lượng hợp lệ (> 5MB)
-    if os.path.getsize(temp_file) < 5 * 1024 * 1024:
+    # Đảm bảo file tải về có dung lượng hợp lệ (> 10MB)
+    if os.path.getsize(temp_file) < 10 * 1024 * 1024:
         raise ValueError("File tải về không hoàn chỉnh (kích thước quá nhỏ)!")
 
-    # Tạo file batch apply_update.bat để hoán đổi file an toàn sau khi app đóng
+    # Tạo file batch apply_update.bat với cơ chế chống khóa file (File Lock Retry Loop)
     bat_file = os.path.join(app_dir, "apply_update.bat")
     bat_content = f"""@echo off
 chcp 65001 >nul
-title Dang Cap Nhat TS Origin Control V3...
+cd /d "%~dp0"
+title Cap Nhat TS Origin Control V3...
+
 echo ========================================================
 echo   HE THONG TU DONG CAP NHAT TS ORIGIN CONTROL V3
 echo ========================================================
-echo [1/3] Dang cho tien trinh cu dong han...
-timeout /t 2 /nobreak >nul
-
-:WAIT_LOOP
-tasklist /FI "IMAGENAME eq TS_Origin_Control_V3.exe" 2>NUL | find /I /N "TS_Origin_Control_V3.exe">NUL
-if "%ERRORLEVEL%"=="0" (
-    timeout /t 1 /nobreak >nul
-    goto WAIT_LOOP
-)
+echo [1/3] Dang dong cac tien trinh cu de giai phong file...
+taskkill /F /IM "TS_Origin_Control_V3.exe" >nul 2>nul
+ping 127.0.0.1 -n 3 >nul
 
 echo [2/3] Dang ghi de ban cap nhat moi...
+set RETRY_COUNT=0
+:COPY_LOOP
 copy /y "_update_temp\\TS_Origin_Control_V3.exe" "TS_Origin_Control_V3.exe" >nul
 if errorlevel 1 (
-    echo [LOI] Khong the ghi de file. Vui long thu lai hoac chay bang quyen Admin!
-    pause
-    exit /b 1
+    set /a RETRY_COUNT+=1
+    if %RETRY_COUNT% leq 20 (
+        echo   - File dang ban, dang thu lai lan %RETRY_COUNT%/20...
+        taskkill /F /IM "TS_Origin_Control_V3.exe" >nul 2>nul
+        ping 127.0.0.1 -n 2 >nul
+        goto COPY_LOOP
+    ) else (
+        echo [LOI] Khong the ghi de file sau 20 lan thu. Vui long thu lai bang quyen Administrator!
+        ping 127.0.0.1 -n 5 >nul
+        exit /b 1
+    )
 )
 
-echo [3/3] Don dep file tam va khoi dong lai Tool...
+echo [3/3] Ghi de thanh cong! Dang don dep va khoi dong lai Tool...
 rmdir /s /q "_update_temp" >nul 2>nul
+ping 127.0.0.1 -n 2 >nul
 
 if exist "launch_app.vbs" (
     start "" wscript "launch_app.vbs"
@@ -151,21 +158,22 @@ if exist "launch_app.vbs" (
     start "" "TS_Origin_Control_V3.exe"
 )
 
+ping 127.0.0.1 -n 2 >nul
 (goto) 2>nul & del "%~f0"
 """
     with open(bat_file, "w", encoding="utf-8") as bf:
         bf.write(bat_content)
 
-    # Chạy batch file trong tiến trình độc lập hoàn toàn (detached process)
-    DETACHED_FLAGS = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    # Chạy batch file trong cửa sổ console độc lập (CREATE_NEW_CONSOLE = 0x00000010)
+    CREATE_NEW_CONSOLE = 0x00000010
     subprocess.Popen(
         ["cmd.exe", "/c", bat_file],
         cwd=app_dir,
-        creationflags=DETACHED_FLAGS,
+        creationflags=CREATE_NEW_CONSOLE,
         close_fds=True
     )
 
-    # Thoát tiến trình hiện tại để batch file có thể ghi đè file .exe
+    # Thoát tiến trình hiện tại để giải phóng file .exe
     time.sleep(0.5)
     os._exit(0)
 
@@ -204,6 +212,8 @@ def start_background_updater(app):
         latest_ver = update.get("latest_version")
         download_url = update.get("download_url")
         print(f"[Updater] Phat hien ban cap nhat moi: {latest_ver}! Dang tien hanh tu dong tai ve...")
+        if hasattr(app, 'log_info'):
+            app.after(0, app.log_info, f"🚀 [Auto-Update] Phát hiện bản mới {latest_ver}! Đang tự động tải về ngầm...")
 
         # Cập nhật trạng thái cho Web UI và App
         if hasattr(app, 'update_info'):
@@ -223,6 +233,8 @@ def start_background_updater(app):
             download_and_apply_update(download_url, progress_callback=on_progress)
         except Exception as e:
             print(f"[Updater] Loi trong qua trinh tu dong cap nhat: {e}")
+            if hasattr(app, 'log_warning'):
+                app.after(0, app.log_warning, f"⚠️ [Auto-Update] Không thể tự cập nhật: {e}")
             if hasattr(app, 'update_info'):
                 app.update_info = {
                     "status": "error",
