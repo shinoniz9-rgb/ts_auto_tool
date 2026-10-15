@@ -85,7 +85,7 @@ def check_for_updates(current_version=None):
         # Nếu mất mạng hoặc chưa có release thì âm thầm bỏ qua
         return None
 
-def download_and_apply_update(download_url, progress_callback=None):
+def download_and_apply_update(download_url, progress_callback=None, app=None):
     """
     Tải file TS_Origin_Control_V3.exe về thư mục tạm _update_temp
     và kích hoạt script apply_update.bat chạy ngầm để ghi đè file cũ.
@@ -97,10 +97,10 @@ def download_and_apply_update(download_url, progress_callback=None):
 
     # Tải file từ GitHub CDN (tự động theo redirect 302 của GitHub Releases)
     req = urllib.request.Request(download_url, headers={"User-Agent": "TS_Origin_AutoUpdater"})
-    with urllib.request.urlopen(req, timeout=30) as resp, open(temp_file, "wb") as f:
+    with urllib.request.urlopen(req, timeout=60) as resp, open(temp_file, "wb") as f:
         total_size = int(resp.headers.get("content-length", 0))
         downloaded = 0
-        chunk_size = 64 * 1024  # 64 KB
+        chunk_size = 128 * 1024  # 128 KB
 
         while True:
             chunk = resp.read(chunk_size)
@@ -174,7 +174,9 @@ ping 127.0.0.1 -n 2 >nul
     )
 
     # Thoát tiến trình hiện tại để giải phóng file .exe
-    time.sleep(0.5)
+    if app and hasattr(app, 'log_info'):
+        app.after(0, app.log_info, "🔄 [Auto-Update] Tải hoàn tất! Đang khởi động lại để áp dụng bản mới...")
+    time.sleep(1.0)
     os._exit(0)
 
 def start_background_updater(app):
@@ -230,7 +232,7 @@ def start_background_updater(app):
                 app.update_info["progress"] = percent
 
         try:
-            download_and_apply_update(download_url, progress_callback=on_progress)
+            download_and_apply_update(download_url, progress_callback=on_progress, app=app)
         except Exception as e:
             print(f"[Updater] Loi trong qua trinh tu dong cap nhat: {e}")
             if hasattr(app, 'log_warning'):

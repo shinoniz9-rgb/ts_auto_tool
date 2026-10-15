@@ -211,6 +211,7 @@ class ToolLDPlayerGUI(ctk.CTk):
         self.recent_logs = []
         self.update_info = None
         self.after(600, lambda: web_server.start_web_server(self, port=8082))
+        self.after(1000, lambda: self.log_info(f"✨ TS Origin Control V3 (v{APP_VERSION}) - Đã sẵn sàng hoạt động!"))
         self.after(2500, lambda: updater.start_background_updater(self))
 
         # Dọn sạch ADB session bẩn từ lần chạy trước (chống xung đột ADB khi dev/debug)
