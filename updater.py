@@ -152,6 +152,11 @@ echo [3/3] Ghi de thanh cong! Dang don dep va khoi dong lai Tool...
 rmdir /s /q "_update_temp" >nul 2>nul
 ping 127.0.0.1 -n 2 >nul
 
+REM Xoa sach bien moi truong PyInstaller de tranh loi Security validation failure
+set _MEIPASS2=
+set _PYI_APPLICATION_HOME_DIR=
+set _PYI_SPLASH_IPC=
+
 if exist "launch_app.vbs" (
     start "" wscript "launch_app.vbs"
 ) else (
@@ -164,11 +169,18 @@ ping 127.0.0.1 -n 2 >nul
     with open(bat_file, "w", encoding="utf-8") as bf:
         bf.write(bat_content)
 
+    # Xóa sạch các biến môi trường nội bộ của PyInstaller để tiến trình con không bị dính môi trường cũ
+    clean_env = os.environ.copy()
+    for key in list(clean_env.keys()):
+        if key.startswith("_MEI") or key.startswith("_PYI"):
+            clean_env.pop(key, None)
+
     # Chạy batch file trong cửa sổ console độc lập (CREATE_NEW_CONSOLE = 0x00000010)
     CREATE_NEW_CONSOLE = 0x00000010
     subprocess.Popen(
         ["cmd.exe", "/c", bat_file],
         cwd=app_dir,
+        env=clean_env,
         creationflags=CREATE_NEW_CONSOLE,
         close_fds=True
     )
