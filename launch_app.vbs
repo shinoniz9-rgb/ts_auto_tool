@@ -1,6 +1,16 @@
 Set oWS = CreateObject("WScript.Shell")
 Set oFSO = CreateObject("Scripting.FileSystemObject")
 
+' Xoa sach cac bien moi truong noi bo PyInstaller neu chay qua update
+On Error Resume Next
+oWS.Environment("PROCESS").Remove("_PYI_PARENT_PROCESS_LEVEL")
+oWS.Environment("PROCESS").Remove("_MEIPASS2")
+oWS.Environment("PROCESS").Remove("_MEIPASS")
+oWS.Environment("PROCESS").Remove("_PYI_APPLICATION_HOME_DIR")
+oWS.Environment("PROCESS").Remove("_PYI_ARCHIVE_FILE")
+oWS.Environment("PROCESS").Remove("_PYI_SPLASH_IPC")
+On Error GoTo 0
+
 ' 1. Lay thu muc chua chinh file script nay (Giup Tool hoat dong linh hoat o moi may tinh va o dia)
 scriptDir = oFSO.GetParentFolderName(WScript.ScriptFullName)
 
