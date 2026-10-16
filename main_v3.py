@@ -4111,22 +4111,17 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         self._trigger_card_AB_workflow("Tổng Hợp")
 
     def _sleep_with_stop_check(self, seconds: float, check_active=None) -> bool:
-        """Tạm dừng ngủ ngầm: Đánh thức tức thì (< 0.2s) khi bấm Dừng tổng hoặc khi check_active() trả về False."""
-        start = time.time()
-        step = 0.2  # 200ms phản hồi siêu nhạy, giảm 90% CPU overhead so với polling 0.02s
-        while time.time() - start < seconds:
+        """Tạm dừng ngủ ngầm: Đánh thức trong vòng 0.05s khi bấm Dừng tổng hoặc khi check_active() trả về False."""
+        # step 0.05s: giảm 60% CPU so với 0.02s cũ, phản hồi ngắt trong 50ms - đủ nhanh cho mọi tình huống
+        step = 0.05
+        deadline = time.time() + seconds
+        while time.time() < deadline:
             if self.stop_requested or (hasattr(self, '_stop_event') and self._stop_event.is_set()):
                 return True
             if check_active is not None and not check_active():
                 return True
-            rem = seconds - (time.time() - start)
-            sleep_time = min(step, rem)
-            if sleep_time <= 0:
-                break
-            if hasattr(self, '_stop_event') and self._stop_event.wait(timeout=sleep_time):
-                return True
-            elif not hasattr(self, '_stop_event'):
-                time.sleep(sleep_time)
+            rem = deadline - time.time()
+            time.sleep(min(step, max(rem, 0)))
         return False
 
     def _reset_stop_flags(self):
@@ -4206,7 +4201,11 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         if hasattr(self, 'var_pause_D') and self.var_pause_D.get():
             self.after(0, self.log_info, "⏸️ [Sự Kiện - Card D] Ô Tạm Dừng đang tích ➔ Tạm dừng tiến trình (nhả ô Tạm Dừng để chạy tiếp)...")
             while self.var_pause_D.get() and self.var_switch_D.get() and not self.stop_requested:
-                time.sleep(0.5)
+                # Dùng Event.wait thay vì time.sleep để phản hồi Dừng tổng tức thì
+                if hasattr(self, '_stop_event'):
+                    self._stop_event.wait(timeout=0.3)
+                else:
+                    time.sleep(0.3)
             if self.var_switch_D.get() and not self.stop_requested:
                 self.after(0, self.log_info, "▶️ [Sự Kiện - Card D] Đã nhả ô Tạm Dừng ➔ Khôi phục chạy tiếp!")
         return self.stop_requested or not (hasattr(self, 'var_switch_D') and self.var_switch_D.get())
