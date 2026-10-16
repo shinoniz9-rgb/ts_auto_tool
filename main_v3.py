@@ -166,12 +166,14 @@ class ToolLDPlayerGUI(ctk.CTk):
         # Card Ngày: Quản lý tính năng Nhận Thư
         self.var_nhan_thu = ctk.BooleanVar(value=False)
         self._event_nhan_thu = threading.Event()
+        self._stop_mail_sleep = threading.Event()  # Dùng để ngắt sleep sớm khi tắt ô tích Nhận Thư
         self._completed_mail_slots = set()
 
         # Quản lý tính năng Hẹn Giờ chạy các Card A, B, C, D
         self.var_hen_gio = ctk.BooleanVar(value=False)
         self.var_hen_gio_time = ctk.StringVar(value="05:00")
         self._event_hen_gio = threading.Event()
+        self._stop_hen_gio_sleep = threading.Event()  # Dùng để ngắt sleep sớm khi tắt Hẹn Giờ tổng
 
         # Quản lý luồng tiến trình độc lập Tab Chiến Đấu (chống lag giật / nhân bản luồng)
         self._thread_buff = None
@@ -1467,6 +1469,8 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         else:
             if hasattr(self, '_event_hen_gio'):
                 self._event_hen_gio.clear()
+            if hasattr(self, '_stop_hen_gio_sleep'):
+                self._stop_hen_gio_sleep.set()
             # Theo yêu cầu người dùng: Khi tắt Hẹn Giờ -> Hủy hẹn giờ và nhả công tắc các Card về OFF
             for prefix in ["A", "B", "C", "D"]:
                 switch_attr = f"var_switch_{prefix}"
@@ -4107,14 +4111,22 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         self._trigger_card_AB_workflow("Tổng Hợp")
 
     def _sleep_with_stop_check(self, seconds: float, check_active=None) -> bool:
-        """Tạm dừng ngủ ngầm siêu tốc: Đánh thức tức thì (< 0.02s) khi bấm Dừng tổng hoặc khi check_active() trả về False."""
+        """Tạm dừng ngủ ngầm: Đánh thức tức thì (< 0.2s) khi bấm Dừng tổng hoặc khi check_active() trả về False."""
         start = time.time()
+        step = 0.2  # 200ms phản hồi siêu nhạy, giảm 90% CPU overhead so với polling 0.02s
         while time.time() - start < seconds:
             if self.stop_requested or (hasattr(self, '_stop_event') and self._stop_event.is_set()):
                 return True
             if check_active is not None and not check_active():
                 return True
-            time.sleep(0.02)
+            rem = seconds - (time.time() - start)
+            sleep_time = min(step, rem)
+            if sleep_time <= 0:
+                break
+            if hasattr(self, '_stop_event') and self._stop_event.wait(timeout=sleep_time):
+                return True
+            elif not hasattr(self, '_stop_event'):
+                time.sleep(sleep_time)
         return False
 
     def _reset_stop_flags(self):
@@ -4148,6 +4160,8 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             self.var_hen_gio.set(False)
         if hasattr(self, '_event_hen_gio'):
             self._event_hen_gio.clear()
+        if hasattr(self, '_stop_hen_gio_sleep'):
+            self._stop_hen_gio_sleep.set()
         self._update_hen_gio_ui()
 
         # Nhả ô tích Card Ngày khi bấm nút Dừng tổng
@@ -4155,6 +4169,8 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             self.var_nhan_thu.set(False)
         if hasattr(self, '_event_nhan_thu'):
             self._event_nhan_thu.clear()
+        if hasattr(self, '_stop_mail_sleep'):
+            self._stop_mail_sleep.set()
 
         self._is_card_E_running = False
         self.save_config()
@@ -6240,8 +6256,11 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                     rem_sec = (target_time - datetime.now()).total_seconds()
                     if rem_sec <= 2.0:
                         if self._sleep_card_D(0.2): return
-                    else:
+                    elif rem_sec <= 10.0:
                         if self._sleep_card_D(1.0): return
+                    else:
+                        # Cách xa mốc hẹn: ngủ nhịp dài tối đa 5.0s, vẫn kiểm tra dừng tức thì qua _sleep_card_D
+                        if self._sleep_card_D(min(rem_sec - 2.0, 5.0)): return
             else:
                 self.after(0, self.log_info, f"ℹ️ [Card D - 40 NPC - Bước 1] Thời gian hiện tại ({now.strftime('%H:%M:%S')}) đã qua mốc hẹn {time_val} ➔ Bỏ qua chờ, chạy tiếp ngay!")
 
@@ -7334,6 +7353,9 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         else:
             if hasattr(self, '_event_nhan_thu'):
                 self._event_nhan_thu.clear()
+            # Ngắt sleep đang chờ trong luồng ngầm ngay lập tức
+            if hasattr(self, '_stop_mail_sleep'):
+                self._stop_mail_sleep.set()
             self.after(0, self.log_info, "📬 [CARD NGÀY] Đã tắt Tự Động Nhận Thư.")
         self.save_config()
 
@@ -7592,9 +7614,10 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                 if len(self._completed_mail_slots) > 20:
                     self._completed_mail_slots = {s for s in self._completed_mail_slots if s.startswith(today_str)}
 
-                # 4. CHU KỲ NGHỈ THÔNG MINH 2 NHỊP (ADAPTIVE ZERO-CPU SLEEP)
-                # - Nhịp nhanh (3.0s, chia nhỏ mỗi 0.2s): Khi đang trong khung giờ vàng (12h, 18h, 22h từ phút 01-30) và chưa nhận thư hoặc đang chờ hoạt động khác hết bận.
-                # - Nhịp dài (60.0s, chia nhỏ mỗi 0.5s): Khi ở ngoài khung giờ (hoặc mốc của giờ này đã nhận xong), giúp luồng nghỉ ngơi tối đa, hoàn toàn không tốn CPU.
+                # 4. CHU KỲ NGHỈ THÔNG MINH 2 NHỊP (TRUE ZERO-CPU SLEEP via Event.wait)
+                # - Nhịp nhanh (3.0s): Khi đang trong khung giờ vàng (12h, 18h, 22h phút 01-30) và chưa nhận thư / đang chờ hết bận.
+                # - Nhịp dài (60.0s): Khi ở ngoài khung giờ hoặc mốc đã nhận xong → ngủ OS-level, Zero CPU.
+                # Dùng Event.wait(timeout) thay for-loop để thread ngủ hoàn toàn, không poll liên tục.
                 is_active_window = (now.hour in [12, 18, 22]) and (1 <= now.minute <= 30)
                 current_slot_key = f"{today_str}_{matched_slot}" if matched_slot else None
                 slot_already_done = current_slot_key in self._completed_mail_slots if current_slot_key else False
@@ -7605,18 +7628,16 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                 if (now.hour in [11, 17, 21]) and (now.minute >= 59):
                     needs_fast_check = True
 
-                if needs_fast_check:
-                    # Nhịp nhanh: 3.0 giây (15 lần x 0.2s) - Đón việc tức thì ngay khi hết bận
-                    for _ in range(15):
-                        if not getattr(self, 'var_nhan_thu', None) or not self.var_nhan_thu.get() or self.stop_requested:
-                            break
-                        time.sleep(0.2)
+                # Reset cờ ngắt trước khi ngủ (phòng trường hợp được set từ lần trước)
+                if hasattr(self, '_stop_mail_sleep'):
+                    self._stop_mail_sleep.clear()
+
+                sleep_sec = 3.0 if needs_fast_check else 60.0
+                if hasattr(self, '_stop_mail_sleep'):
+                    # Ngủ thực sự (OS-level), thức dậy khi hết timeout hoặc khi _stop_mail_sleep được set
+                    self._stop_mail_sleep.wait(timeout=sleep_sec)
                 else:
-                    # Nhịp dài: 60.0 giây (120 lần x 0.5s) - Nghỉ ngơi tối ưu ngoài khung giờ (phản hồi ngắt sau tối đa 0.5s)
-                    for _ in range(120):
-                        if not getattr(self, 'var_nhan_thu', None) or not self.var_nhan_thu.get() or self.stop_requested:
-                            break
-                        time.sleep(0.5)
+                    time.sleep(sleep_sec)
 
             except Exception as e:
                 self.after(0, self.log_error, f"⚠️ [CARD NGÀY] Lỗi luồng tự động nhận thư: {e}")
@@ -7727,15 +7748,15 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                     self.after(0, self.save_config)
                     self.after(0, self.log_info, f"🎉 [HẸN GIỜ] Đã hoàn thành toàn bộ hoạt động theo lịch hẹn ({target_time})! Đã tự động trả tất cả công tắc về OFF.")
 
-                # Chu kỳ chờ 60 giây (kiểm tra ngắt quãng mỗi 1.0s để ngắt tức thì khi tắt Hẹn Giờ và đồng bộ trúng đầu phút hẹn)
-                for _ in range(60):
-                    if not getattr(self, 'var_hen_gio', None) or not self.var_hen_gio.get() or self.stop_requested:
-                        break
-                    # Đồng bộ chính xác theo đầu phút mới (khi giây >= 58 thì chuẩn bị chuyển phút để so khớp mốc giờ)
-                    if datetime.now().second >= 58:
-                        time.sleep(1.0)
-                        break
-                    time.sleep(1.0)
+                # Chu kỳ nghỉ thông minh Zero-CPU: Ngủ OS-level cho đến đầu phút tiếp theo (hoặc ngắt tức thì khi tắt)
+                if hasattr(self, '_stop_hen_gio_sleep'):
+                    self._stop_hen_gio_sleep.clear()
+
+                sec_remain = max(1.0, 60.0 - datetime.now().second)
+                if hasattr(self, '_stop_hen_gio_sleep'):
+                    self._stop_hen_gio_sleep.wait(timeout=sec_remain)
+                else:
+                    time.sleep(sec_remain)
 
             except Exception as e:
                 self.after(0, self.log_error, f"⚠️ Lỗi luồng hẹn giờ: {e}")

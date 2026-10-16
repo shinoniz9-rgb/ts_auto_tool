@@ -216,7 +216,7 @@ def sync_git(new_ver, changelog):
     print(f"\n[3/4] Đang đồng bộ commit và push lên GitHub (main)...")
     try:
         files_to_add = [
-            "version.py", "main_v3.py", "publish_release.py", "updater.py",
+            "version.py", "main_v3.py", "web_server_v3.py", "publish_release.py", "updater.py",
             "Tao_Loi_Tat_Desktop.bat", "launch_app.vbs", "AGENTS.md",
             "assets/card_d/nhikieu/", "assets/card_e/"
         ]
@@ -298,7 +298,7 @@ def main():
         sys.exit(1)
 
     print("\n" + "=" * 66)
-    print(f"🎉 CHÚC MỮNG! BẢN v{new_ver} ĐÃ ĐƯỢC PHÁT HÀNH THÀNH CÔNG LÊN GITHUB!")
+    print(f"🎉 CHÚC MỪNG! BẢN v{new_ver} ĐÃ ĐƯỢC PHÁT HÀNH THÀNH CÔNG LÊN GITHUB!")
     print("-> Tất cả máy tính của bạn bè khi mở Tool lên sẽ TỰ ĐỘNG CẬP NHẬT bản này.")
     print("=" * 66 + "\n")
 
