@@ -2,6 +2,15 @@
 """
 Module tự động kiểm tra và cập nhật (Auto-Updater) cho TS Origin Control V3.
 Hỗ trợ tải ngầm từ GitHub Releases và tự khởi động lại app an toàn trên Windows.
+
+Fixes v2:
+  [C2] Verify SHA256 checksum sau khi tải về.
+  [C3] CREATE_NEW_PROCESS_GROUP + tăng sleep 2.5s trước os._exit.
+  [M3] known_size làm fallback khi CDN không trả content-length.
+  [M4] Dùng local_ver thay APP_VERSION trong dict trả về.
+  [N1] Ghi bat file bằng encoding='mbcs' (Windows ANSI).
+  [N2] Cảnh báo 5 giây trước khi tự restart.
+  [N4] Dọn sạch _update_temp khi download thất bại.
 """
 
 import os
@@ -9,11 +18,18 @@ import sys
 import re
 import json
 import time
+import hashlib
+import shutil
 import urllib.request
-import urllib.parse
 import subprocess
 import threading
 from version import APP_VERSION, GITHUB_REPO
+
+
+def _parse_sha256_from_body(body: str) -> str:
+    """[C2] Trích xuất SHA256 checksum đã nhúng trong release body bởi publish_release.py."""
+    m = re.search(r'\*\*SHA256\*\*:\s*`([a-f0-9]{64})`', body or "")
+    return m.group(1) if m else None
 
 def get_app_dir():
     """Lấy đường dẫn thư mục thực tế chứa file .exe (hoặc script main_v3.py)."""
@@ -67,54 +83,87 @@ def check_for_updates(current_version=None):
                 name = asset.get("name", "")
                 if name.lower() == "ts_origin_control_v3.exe":
                     download_url = asset.get("browser_download_url")
-                    asset_size = asset.get("size", 0)
+                    asset_size = asset.get("size", 0)  # [FIX M3]
                     break
 
             if not download_url:
                 return None
 
+            release_body = data.get("body", "Bản cập nhật mới.")
             return {
                 "has_update": True,
-                "current_version": APP_VERSION,
+                "current_version": local_ver,                    # [FIX M4] local_ver thay APP_VERSION
                 "latest_version": remote_tag,
                 "download_url": download_url,
-                "size": asset_size,
-                "changelog": data.get("body", "Bản cập nhật mới.")
+                "size": asset_size,                              # [FIX M3] kích thước asset từ API
+                "changelog": release_body,
+                "sha256": _parse_sha256_from_body(release_body) # [FIX C2] checksum
             }
     except Exception as e:
         # Nếu mất mạng hoặc chưa có release thì âm thầm bỏ qua
         return None
 
-def download_and_apply_update(download_url, progress_callback=None, app=None):
+def download_and_apply_update(download_url, progress_callback=None, app=None, known_size: int = 0, expected_sha256: str = None):
     """
-    Tải file TS_Origin_Control_V3.exe về thư mục tạm _update_temp
-    và kích hoạt script apply_update.bat chạy ngầm để ghi đè file cũ.
+    Tải file TS_Origin_Control_V3.exe về thư mục tạm _update_temp,
+    xác minh SHA256 [C2], rồi kích hoạt apply_update.bat để ghi đè và restart.
+
+    Params:
+        known_size      – kích thước asset từ API (fallback khi CDN không trả content-length). [M3]
+        expected_sha256 – SHA256 nhúng trong release body để xác minh toàn vẹn file. [C2]
     """
     app_dir = get_app_dir()
     temp_dir = os.path.join(app_dir, "_update_temp")
     os.makedirs(temp_dir, exist_ok=True)
-    temp_file = os.path.join(temp_dir, "TS_Origin_Control_V3.exe")
+    tmp_partial = os.path.join(temp_dir, "_partial_download.exe")
 
-    # Tải file từ GitHub CDN (tự động theo redirect 302 của GitHub Releases)
-    req = urllib.request.Request(download_url, headers={"User-Agent": "TS_Origin_AutoUpdater"})
-    with urllib.request.urlopen(req, timeout=60) as resp, open(temp_file, "wb") as f:
-        total_size = int(resp.headers.get("content-length", 0))
-        downloaded = 0
-        chunk_size = 128 * 1024  # 128 KB
+    try:
+        # Tải file từ GitHub CDN
+        req = urllib.request.Request(download_url, headers={"User-Agent": "TS_Origin_AutoUpdater"})
+        with urllib.request.urlopen(req, timeout=60) as resp, open(tmp_partial, "wb") as f:
+            # [FIX M3] dùng known_size làm fallback khi CDN không gửi content-length
+            total_size = int(resp.headers.get("content-length", 0)) or known_size
+            downloaded = 0
+            chunk_size = 128 * 1024  # 128 KB
 
-        while True:
-            chunk = resp.read(chunk_size)
-            if not chunk:
-                break
-            f.write(chunk)
-            downloaded += len(chunk)
-            if progress_callback and total_size > 0:
-                percent = int(downloaded * 100 / total_size)
-                progress_callback(percent, downloaded, total_size)
+            while True:
+                chunk = resp.read(chunk_size)
+                if not chunk:
+                    break
+                f.write(chunk)
+                downloaded += len(chunk)
+                if progress_callback and total_size > 0:
+                    percent = min(int(downloaded * 100 / total_size), 99)
+                    progress_callback(percent, downloaded, total_size)
 
-    # Đảm bảo file tải về có dung lượng hợp lệ (> 10MB)
-    if os.path.getsize(temp_file) < 10 * 1024 * 1024:
-        raise ValueError("File tải về không hoàn chỉnh (kích thước quá nhỏ)!")
+        # [FIX C2] Verify SHA256 checksum trước khi apply
+        if expected_sha256:
+            sha256_calc = hashlib.sha256()
+            with open(tmp_partial, "rb") as chk_f:
+                for chunk in iter(lambda: chk_f.read(128 * 1024), b""):
+                    sha256_calc.update(chunk)
+            actual_hash = sha256_calc.hexdigest()
+            if actual_hash != expected_sha256:
+                raise ValueError(
+                    f"File tải về bị lỗi! SHA256 không khớp.\n"
+                    f"  Expected: {expected_sha256}\n"
+                    f"  Got:      {actual_hash}"
+                )
+
+        # Kiểm tra kích thước tối thiểu (> 10 MB)
+        if os.path.getsize(tmp_partial) < 10 * 1024 * 1024:
+            raise ValueError("File tải về không hoàn chỉnh (kích thước quá nhỏ < 10 MB)!")
+
+        # Đổi tên sang tên đích cuối cùng
+        temp_file = os.path.join(temp_dir, "TS_Origin_Control_V3.exe")
+        os.replace(tmp_partial, temp_file)
+        if progress_callback:
+            progress_callback(100, os.path.getsize(temp_file), os.path.getsize(temp_file))
+
+    except Exception:
+        # [FIX N4] Dọn sạch _update_temp nếu download / verify thất bại
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
 
     # Tạo file batch apply_update.bat với cơ chế chống khóa file (File Lock Retry Loop)
     bat_file = os.path.join(app_dir, "apply_update.bat")
@@ -170,7 +219,8 @@ if exist "launch_app.vbs" (
 ping 127.0.0.1 -n 2 >nul
 (goto) 2>nul & del "%~f0"
 """
-    with open(bat_file, "w", encoding="utf-8") as bf:
+    # [FIX N1] Dùng 'mbcs' (Windows system ANSI) để cmd.exe đọc đúng trên mọi máy Windows
+    with open(bat_file, "w", encoding="mbcs", errors="replace") as bf:
         bf.write(bat_content)
 
     # Xóa sạch các biến môi trường nội bộ của PyInstaller để tiến trình con không bị dính môi trường cũ
@@ -179,20 +229,29 @@ ping 127.0.0.1 -n 2 >nul
         if key.startswith("_MEI") or key.startswith("_PYI") or key.startswith("PYI"):
             clean_env.pop(key, None)
 
-    # Chạy batch file trong cửa sổ console độc lập (CREATE_NEW_CONSOLE = 0x00000010)
-    CREATE_NEW_CONSOLE = 0x00000010
+    # [FIX N2] Cảnh báo 5 giây để user tắt bot trước khi app tự restart
+    if app and hasattr(app, 'log_warning'):
+        app.after(0, app.log_warning,
+                  "⚠️ [Auto-Update] Tải xong! Tool sẽ tự khởi động lại sau 5 giây. "
+                  "Tắt bot trước nếu đang chạy để tránh bị ngắt đột ngột!")
+    time.sleep(5.0)
+
+    if app and hasattr(app, 'log_info'):
+        app.after(0, app.log_info, "🔄 [Auto-Update] Đang áp dụng bản mới và khởi động lại...")
+
+    # [FIX C3] CREATE_NEW_PROCESS_GROUP đảm bảo cmd.exe hoàn toàn độc lập với tiến trình hiện tại
+    CREATE_NEW_CONSOLE       = 0x00000010
+    CREATE_NEW_PROCESS_GROUP = 0x00000200
     subprocess.Popen(
         ["cmd.exe", "/c", bat_file],
         cwd=app_dir,
         env=clean_env,
-        creationflags=CREATE_NEW_CONSOLE,
+        creationflags=CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP,
         close_fds=True
     )
 
-    # Thoát tiến trình hiện tại để giải phóng file .exe
-    if app and hasattr(app, 'log_info'):
-        app.after(0, app.log_info, "🔄 [Auto-Update] Tải hoàn tất! Đang khởi động lại để áp dụng bản mới...")
-    time.sleep(1.0)
+    # [FIX C3] Tăng sleep 1.0 → 2.5s để cmd.exe chắc chắn spawn xong trước khi exit
+    time.sleep(2.5)
     os._exit(0)
 
 def start_background_updater(app):
@@ -227,9 +286,11 @@ def start_background_updater(app):
                 }
             return
 
-        latest_ver = update.get("latest_version")
-        download_url = update.get("download_url")
-        print(f"[Updater] Phat hien ban cap nhat moi: {latest_ver}! Dang tien hanh tu dong tai ve...")
+        latest_ver      = update.get("latest_version")
+        download_url    = update.get("download_url")
+        known_size      = update.get("size", 0)       # [FIX M3]
+        expected_sha256 = update.get("sha256")        # [FIX C2]
+        print(f"[Updater] Phat hien ban moi: {latest_ver}! Bat dau tai ve...")
         if hasattr(app, 'log_info'):
             app.after(0, app.log_info, f"🚀 [Auto-Update] Phát hiện bản mới {latest_ver}! Đang tự động tải về ngầm...")
 
@@ -248,7 +309,13 @@ def start_background_updater(app):
                 app.update_info["progress"] = percent
 
         try:
-            download_and_apply_update(download_url, progress_callback=on_progress, app=app)
+            download_and_apply_update(
+                download_url,
+                progress_callback=on_progress,
+                app=app,
+                known_size=known_size,           # [FIX M3]
+                expected_sha256=expected_sha256  # [FIX C2]
+            )
         except Exception as e:
             print(f"[Updater] Loi trong qua trinh tu dong cap nhat: {e}")
             if hasattr(app, 'log_warning'):
