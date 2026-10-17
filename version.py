@@ -1,4 +1,4 @@
 # -*- coding: utf-8 -*-
 """Định nghĩa phiên bản và thông tin repository GitHub cho TS Auto Tool."""
-APP_VERSION = "3.1.8"
+APP_VERSION = "3.1.9"
 GITHUB_REPO = "shinoniz9-rgb/ts_auto_tool"

@@ -168,6 +168,9 @@ class ToolLDPlayerGUI(ctk.CTk):
         self._event_nhan_thu = threading.Event()
         self._stop_mail_sleep = threading.Event()  # Dùng để ngắt sleep sớm khi tắt ô tích Nhận Thư
         self._completed_mail_slots = set()
+        self._mail_request_flag = False  # Cờ báo hiệu Nhận Thư cần quyền điều khiển màn hình
+        self._mail_completed_event = threading.Event()  # Báo hiệu Nhận Thư đã xong để Nhận Đội tiếp tục
+        self._mail_completed_event.set()
 
         # Quản lý tính năng Hẹn Giờ chạy các Card A, B, C, D
         self.var_hen_gio = ctk.BooleanVar(value=False)
@@ -2429,6 +2432,9 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         if not self.var_switch_D.get():
             if hasattr(self, 'var_pause_D'):
                 self.var_pause_D.set(False)
+            self._mail_request_flag = False
+            if hasattr(self, '_mail_completed_event'):
+                self._mail_completed_event.set()
             self.save_config()
             self.log_info("🛑 [SỰ KIỆN - CARD D] Công tắc gạt về OFF ➔ Đã ngắt tiến trình & nhả ô Tạm Dừng!")
         else:
@@ -4129,6 +4135,9 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         self.stop_requested = False
         if hasattr(self, '_stop_event') and self._stop_event is not None:
             self._stop_event.clear()
+        self._mail_request_flag = False
+        if hasattr(self, '_mail_completed_event'):
+            self._mail_completed_event.set()
 
     def dung_tat_ca_hoat_dong(self):
         """Nút Dừng tổng: Ngắt lập tức tất cả các card có trong tool & tiến trình mở game TS Origin"""
@@ -4166,6 +4175,9 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             self._event_nhan_thu.clear()
         if hasattr(self, '_stop_mail_sleep'):
             self._stop_mail_sleep.set()
+        self._mail_request_flag = False
+        if hasattr(self, '_mail_completed_event'):
+            self._mail_completed_event.set()
 
         self._is_card_E_running = False
         self.save_config()
@@ -6419,6 +6431,16 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         # BƯỚC 6 (Vòng lặp đánh Lôi Đài 37 lượt trận - Lượt 1 -> 37):
         self._run_40_npc_loidai_battle_loop(dnconsole_path, tab_index)
 
+    def _check_and_wait_for_mail_preemption(self) -> bool:
+        """Nếu có tín hiệu Nhận Thư cần mượn quyền, tạm dừng nhịp quét để nhường quyền điều khiển"""
+        if getattr(self, '_mail_request_flag', False):
+            self.after(0, self.log_info, "📬 [Nhận Đội] Phát hiện đến giờ Nhận Thư ➔ Tạm nhường quyền điều khiển màn hình...")
+            if hasattr(self, '_mail_completed_event'):
+                self._mail_completed_event.wait(timeout=25.0)
+            self.after(0, self.log_info, "⚔️ [Nhận Đội] Nhận Thư đã hoàn tất ➔ Tiếp tục quy trình quét chờ lời mời 24/24...")
+            return True
+        return False
+
     def _run_nhan_doi_action(self, dnconsole_path: str, tab_index: str, check_skill_switch: bool = False):
         """
         THAO TÁC Ô TÍCH NHẬN ĐỘI (CARD D):
@@ -6447,6 +6469,9 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             logged_initial_wait = False
 
             while not self._should_stop_card_D():
+                self._check_and_wait_for_mail_preemption()
+                if self._should_stop_card_D(): return False
+
                 # Hỗ trợ chuyển đổi kỹ năng realtime ngay trong lúc chờ lời mời
                 if check_skill_switch and hasattr(self, 'var_D_skill'):
                     cur_sk = self.var_D_skill.get()
@@ -6475,6 +6500,8 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                         last_wait_log_time = now
 
                     if self._sleep_card_D(3.0): return False
+                    self._check_and_wait_for_mail_preemption()
+                    if self._should_stop_card_D(): return False
 
             if self._should_stop_card_D(): return False
 
@@ -6659,6 +6686,8 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                             # Đã chuyển sang Đánh Tay giữa trận ➔ Thoát ra ngay
                             break
 
+                        if self._should_stop_card_D(): break
+                        self._check_and_wait_for_mail_preemption()
                         if self._should_stop_card_D(): break
                         if self._sleep_card_D(1.0): break
 
@@ -7355,6 +7384,9 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             # Ngắt sleep đang chờ trong luồng ngầm ngay lập tức
             if hasattr(self, '_stop_mail_sleep'):
                 self._stop_mail_sleep.set()
+            self._mail_request_flag = False
+            if hasattr(self, '_mail_completed_event'):
+                self._mail_completed_event.set()
             self.after(0, self.log_info, "📬 [CARD NGÀY] Đã tắt Tự Động Nhận Thư.")
         self.save_config()
 
@@ -7374,6 +7406,17 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             return False
 
         self._is_nhan_thu_running = True
+
+        # Kiểm tra nếu Nhận Đội đang chạy thì phát tín hiệu mượn quyền điều khiển màn hình
+        is_nhan_doi_running = (
+            hasattr(self, 'var_switch_D') and self.var_switch_D.get()
+            and hasattr(self, 'var_D_nhan_doi') and self.var_D_nhan_doi.get()
+        )
+        if is_nhan_doi_running:
+            self._mail_request_flag = True
+            if hasattr(self, '_mail_completed_event'):
+                self._mail_completed_event.clear()
+            time.sleep(0.5)
 
         def _tap(x: int, y: int, delay: float = 0.4):
             if self.stop_requested:
@@ -7473,19 +7516,19 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                 self.after(0, self.log_info, "🛑 [CARD NGÀY] Đã nhận lệnh Dừng, hủy thao tác Nhận Thư.")
                 return False
 
-            self.after(0, self.log_info, "👉 [CARD NGÀY - Bước 3] Tap tọa độ (365, 575)")
-            _tap(365, 575, 0.4)
+            # Tap cố định 1: Bấm nút "Nhận" tại tọa độ (855, 575)
+            self.after(0, self.log_info, "👉 [CARD NGÀY - Bước 3] Tap nút 'Nhận' tại tọa độ (855, 575)")
+            _tap(855, 575, 0.4)
 
-            self.after(0, self.log_info, "👉 [CARD NGÀY - Bước 3] Tap tọa độ (540, 575)")
-            _tap(540, 575, 0.4)
-
+            # Đóng bảng thư: Quét tìm nút X card_top/login/login_x.png (ngưỡng 75%) trong ROI (990, 50, 1165, 200)
             self.after(0, self.log_info, "👁️ [CARD NGÀY - Bước 3] Quét tìm 'card_top/login/login_x.png' (75%, ROI 990,50,1165,200)...")
             lx_x, lx_y = self._find_template_on_screen(dnconsole_path, tab_index, "card_top/login/login_x.png", threshold=0.75, region=(990, 50, 1165, 200))
             if lx_x is not None and lx_y is not None:
                 self.after(0, self.log_info, f"🎯 Phát hiện 'card_top/login/login_x.png' tại ({lx_x}, {lx_y})! Tap đóng bảng thư")
                 _tap(lx_x, lx_y, 0.4)
 
-            self.after(0, self.log_info, "👉 [CARD NGÀY - Bước 3] Tap tọa độ (1213, 648)")
+            # Tap cố định 2: Tap thu gọn Menu tiện ích tại tọa độ (1213, 648)
+            self.after(0, self.log_info, "👉 [CARD NGÀY - Bước 3] Tap thu gọn Menu tiện ích tại tọa độ (1213, 648)")
             _tap(1213, 648, 0.4)
 
             self.after(0, self.log_info, f"✅ [CARD NGÀY ({time_slot})] Đã hoàn thành toàn bộ thao tác Nhận Thư!")
@@ -7507,6 +7550,10 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             self.after(0, self.log_error, f"❌ [CARD NGÀY] Lỗi tiến trình Nhận Thư: {e}")
             return False
         finally:
+            if is_nhan_doi_running:
+                self._mail_request_flag = False
+                if hasattr(self, '_mail_completed_event'):
+                    self._mail_completed_event.set()
             self._is_nhan_thu_running = False
 
     def _is_tool_busy_with_activities(self) -> tuple[bool, str]:
@@ -7530,7 +7577,9 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             if hasattr(self, 'var_switch_C') and self.var_switch_C.get():
                 return True, "Card Dị Giới (C)"
             if hasattr(self, 'var_switch_D') and self.var_switch_D.get():
-                return True, "Card 40 NPC / Nhị Kiều (D)"
+                is_nhan_doi_only = hasattr(self, 'var_D_nhan_doi') and self.var_D_nhan_doi.get()
+                if not is_nhan_doi_only:
+                    return True, "Card 40 NPC / Nhị Kiều (D)"
 
         if hasattr(self, 'btn_enter_game'):
             try:
