@@ -218,7 +218,7 @@ def sync_git(new_ver, changelog):
         files_to_add = [
             "version.py", "main_v3.py", "web_server_v3.py", "publish_release.py", "updater.py",
             "Tao_Loi_Tat_Desktop.bat", "launch_app.vbs", "AGENTS.md",
-            "assets/card_d/nhikieu/", "assets/card_e/"
+            "assets/card_d/", "assets/card_e/"
         ]
         subprocess.run(["git", "add"] + files_to_add, check=False)
         commit_res = subprocess.run(

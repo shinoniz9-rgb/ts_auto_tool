@@ -73,17 +73,21 @@ COLOR_ORANGE_HOVER = "#c2410c"
 class ToolLDPlayerGUI(ctk.CTk):
     # Danh sách 10 vị trí thành viên trong đội (ROI chuẩn 1280x720, w=20, h=11 gồm 6px HP đỏ + 5px SP xanh)
     # Thứ tự ưu tiên cứu: Hàng Sau (HS) 1->5 trước, sau đó Hàng Trước (HT) 1->5
+    # Tọa độ chuẩn xác 100% đo đạc từ game 1280x720:
+    # - hp_x, hp_y: Tọa độ gốc thanh máu HP. _detect_dead_members quét ruột trong (x+1, y+1, w=62, h=4) loại bỏ viền kim loại
+    # - sp_x, sp_y: Tọa độ gốc thanh năng lượng SP Cyan. Quét ruột trong (x+1, y, w=62, h=4)
+    # - x, y: Tọa độ gốc dùng để tính click hồi sinh trúng cơ thể trên sàn (x+35, y+95)
     _TEAM_HP_MEMBERS = (
-        {"key": "HS_1", "name": "HS_1", "file": "HS_1.png", "x": 702, "y": 497, "w": 20, "h": 11},
-        {"key": "HS_2", "name": "HS_2", "file": "HS_2.png", "x": 782, "y": 449, "w": 20, "h": 11},
-        {"key": "HS_3", "name": "HS_3", "file": "HS_3.png", "x": 863, "y": 427, "w": 20, "h": 11},
-        {"key": "HS_4", "name": "HS_4", "file": "HS_4.png", "x": 943, "y": 371, "w": 20, "h": 11},
-        {"key": "HS_5", "name": "HS_5", "file": "HS_5.png", "x": 1023, "y": 330, "w": 20, "h": 11},
-        {"key": "HT_1", "name": "HT_1", "file": "HT_1.png", "x": 621, "y": 451, "w": 20, "h": 11},
-        {"key": "HT_2", "name": "HT_2", "file": "HT_2.png", "x": 702, "y": 408, "w": 20, "h": 11},
-        {"key": "HT_3", "name": "HT_3", "file": "HT_3.png", "x": 782, "y": 368, "w": 20, "h": 11},
-        {"key": "HT_4", "name": "HT_4", "file": "HT_4.png", "x": 863, "y": 338, "w": 20, "h": 11},
-        {"key": "HT_5", "name": "HT_5", "file": "HT_5.png", "x": 943, "y": 289, "w": 20, "h": 11},
+        {"key": "HS_1", "name": "HS_1 (Chủ PT)", "x": 703, "y": 498, "hp_x": 703, "hp_y": 498, "sp_x": 703, "sp_y": 505, "w": 65, "h_hp": 6, "h_sp": 4},
+        {"key": "HS_2", "name": "HS_2",          "x": 783, "y": 457, "hp_x": 783, "hp_y": 457, "sp_x": 783, "sp_y": 464, "w": 65, "h_hp": 6, "h_sp": 4},
+        {"key": "HS_3", "name": "HS_3",          "x": 864, "y": 426, "hp_x": 864, "hp_y": 426, "sp_x": 864, "sp_y": 433, "w": 65, "h_hp": 6, "h_sp": 4},
+        {"key": "HS_4", "name": "HS_4",          "x": 944, "y": 382, "hp_x": 944, "hp_y": 382, "sp_x": 944, "sp_y": 389, "w": 65, "h_hp": 6, "h_sp": 4},
+        {"key": "HS_5", "name": "HS_5",          "x": 1024, "y": 348, "hp_x": 1024, "hp_y": 348, "sp_x": 1024, "sp_y": 355, "w": 65, "h_hp": 6, "h_sp": 4},
+        {"key": "HT_1", "name": "HT_1 (Pet 1)",  "x": 622, "y": 451, "hp_x": 622, "hp_y": 451, "sp_x": 622, "sp_y": 458, "w": 65, "h_hp": 6, "h_sp": 4},
+        {"key": "HT_2", "name": "HT_2 (Pet 2)",  "x": 703, "y": 408, "hp_x": 703, "hp_y": 408, "sp_x": 703, "sp_y": 415, "w": 65, "h_hp": 6, "h_sp": 4},
+        {"key": "HT_3", "name": "HT_3 (Pet 3)",  "x": 783, "y": 372, "hp_x": 783, "hp_y": 372, "sp_x": 783, "sp_y": 379, "w": 65, "h_hp": 6, "h_sp": 4},
+        {"key": "HT_4", "name": "HT_4 (Pet 4)",  "x": 864, "y": 329, "hp_x": 864, "hp_y": 329, "sp_x": 864, "sp_y": 336, "w": 65, "h_hp": 6, "h_sp": 4},
+        {"key": "HT_5", "name": "HT_5 (Pet 5)",  "x": 944, "y": 289, "hp_x": 944, "hp_y": 289, "sp_x": 944, "sp_y": 296, "w": 65, "h_hp": 6, "h_sp": 4},
     )
 
     def __init__(self):
@@ -196,6 +200,9 @@ class ToolLDPlayerGUI(ctk.CTk):
         self.telegram_chat_id = "6647756940"
         self.telegram_chat_id_2 = "-1004344257210"
         self.current_active_tab = None
+        self._run_token = 0
+        self._screen_cache = {}
+        self._active_adb_device = {}
 
         # --- TẠO HỆ THỐNG GIAO DIỆN ---
         self._setup_grid()
@@ -1126,12 +1133,13 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                         if hasattr(self, 'var_ld_path'):
                             self.var_ld_path.set(self.ld_path)
 
-                if "selected_tab" in config and hasattr(self, 'combo_ld_tabs'):
+                if target_tab is None and "selected_tab" in config and hasattr(self, 'combo_ld_tabs'):
                     self.saved_selected_tab = config["selected_tab"]
 
                 tab_to_load = target_tab or self._get_current_tab_name()
                 if tab_to_load and tab_to_load not in ["Đang quét tab...", "Lỗi quét dữ liệu", "Không tìm thấy tab LD nào"]:
                     self.current_active_tab = tab_to_load
+                    self.saved_selected_tab = tab_to_load
 
                 tab_configs = config.get("tab_configs", {})
 
@@ -1340,6 +1348,11 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         self.current_active_tab = choice
         self.saved_selected_tab = choice
 
+        # Tăng token phiên chạy để các luồng chạy cũ tự thoát ngay và dọn sạch cache
+        self._run_token = getattr(self, '_run_token', 0) + 1
+        self._screen_cache = {}
+        self._active_adb_device = {}
+
         self.load_config(target_tab=choice)
         self.log_info(f"🔄 Đã nạp cấu hình riêng của tab LDPlayer: '{choice}'")
 
@@ -1524,6 +1537,13 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         dict_map = getattr(self, "dict_name_to_index", {})
         index_tab = dict_map.get(tab_name)
         if index_tab is None:
+            try:
+                vals = list(self.combo_ld_tabs.cget("values"))
+                if tab_name in vals:
+                    index_tab = str(vals.index(tab_name))
+            except Exception:
+                pass
+        if index_tab is None:
             # Dò tìm con số trong tên tab (VD: "LDPlayer-1" -> "1")
             nums = re.findall(r'\d+', tab_name)
             index_tab = nums[0] if nums else "0"
@@ -1575,17 +1595,33 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
 
             choice = self.combo_buff.get() if hasattr(self, 'combo_buff') else "Buff HP"
             self.log_info(f"⚡ [Buff] Ô Buff vừa tích BẬT ➔ Kích hoạt tiến trình Buff song song (Chế độ: {choice}) trên Tab: {tab_name} (Index: {tab_index})...")
+
+            current_token = getattr(self, '_run_token', 0)
+            buff_token = getattr(self, '_thread_buff_token', None)
+            buff_tab = getattr(self, '_thread_buff_tab', None)
             if hasattr(self, '_thread_buff') and self._thread_buff and self._thread_buff.is_alive():
-                return
-            self._thread_buff = threading.Thread(target=self._run_buff_standalone, args=(dnconsole_path, tab_name, tab_index), daemon=True)
+                if buff_token == current_token and buff_tab == tab_name:
+                    return
+                self._run_token = getattr(self, '_run_token', 0) + 1
+                current_token = self._run_token
+
+            self._thread_buff_token = current_token
+            self._thread_buff_tab = tab_name
+            self._thread_buff = threading.Thread(
+                target=self._run_buff_standalone,
+                args=(dnconsole_path, tab_name, tab_index, current_token),
+                daemon=True
+            )
             self._thread_buff.start()
         else:
             self.log_info("🛑 [Buff] Ô Buff vừa bỏ tích ➔ Đã ngắt tiến trình Buff song song!")
 
-    def _run_buff_standalone(self, dnconsole_path: str, tab_name: str, tab_index: str):
+    def _run_buff_standalone(self, dnconsole_path: str, tab_name: str, tab_index: str, run_token: int = None):
         """Worker thread thực thi độc lập/song song cho ô Buff mà không ảnh hưởng tới các Card khác"""
         try:
             while self.var_buff.get() and not self.stop_requested:
+                if run_token is not None and getattr(self, '_run_token', 0) != run_token:
+                    break
                 choice = self.combo_buff.get() if hasattr(self, 'combo_buff') else "Buff HP"
                 if choice == "Buff HP":
                     self._handle_buff_hp(dnconsole_path, tab_name, tab_index)
@@ -1596,15 +1632,17 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                 else:
                     self._handle_buff_hp(dnconsole_path, tab_name, tab_index)
 
-                if self._sleep_with_stop_check(0.1, check_active=self.var_buff.get):
+                if self._sleep_with_stop_check(0.1, check_active=self.var_buff.get, run_token=run_token):
                     break
 
             if not self.stop_requested and not self.var_buff.get():
-                self.after(0, self.log_info, "🛑 [Buff] Đã dừng tiến trình Buff theo yêu cầu bỏ tích ô.")
+                if run_token is None or getattr(self, '_run_token', 0) == run_token:
+                    self.after(0, self.log_info, "🛑 [Buff] Đã dừng tiến trình Buff theo yêu cầu bỏ tích ô.")
         except Exception as e:
             self.after(0, self.log_error, f"❌ Lỗi luồng thực thi Buff song song: {str(e)}")
         finally:
-            self._thread_buff = None
+            if run_token is None or getattr(self, '_thread_buff_token', None) == run_token:
+                self._thread_buff = None
 
     def _tap_login_auto_twice(self, dnconsole_path: str, tab_index: str):
         """Tap 2 lần cách nhau 0.3s vào tọa độ nút Auto (190, 140)"""
@@ -1645,21 +1683,19 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         self._handle_buff_turn(dnconsole_path, tab_name, tab_index, action_type="HP", check_priority=True)
 
     def _handle_buff_sp(self, dnconsole_path: str, tab_name: str, tab_index: str):
-        """Hành động 2 - Buff SP: Lượt buff SP tiêu chuẩn (thuần buff SP)"""
-        self._handle_buff_turn(dnconsole_path, tab_name, tab_index, action_type="SP", check_priority=False)
+        """Hành động 2 - Buff SP: Lượt buff SP tiêu chuẩn kèm kiểm tra ưu tiên Hồi Sinh"""
+        self._handle_buff_turn(dnconsole_path, tab_name, tab_index, action_type="SP", check_priority=True)
 
     def _detect_dead_members(self, dnconsole_path: str, tab_index: str):
         """
-        Mắt thần quét toàn bộ 10 thành viên trong assets/team_hp theo từng slot (Thuật toán tối ưu tập trung nhánh gục ngã).
-        Danh sách trả về gồm tất cả các thành viên bị đánh chết, sắp xếp theo thứ tự: Hàng Sau trước, Hàng Trước sau.
-        Cơ chế nhận diện chuẩn xác 100%:
-        - Tầng 1: Kiểm tra máu đỏ HP tại vị trí đứng chuẩn (x+2 đến x+35, y đến y+5).
-                  Nếu còn dải đỏ (red >= 8px) ➔ Thành viên còn sống 100% ➔ Bỏ qua ngay lập tức.
-        - Tầng 2: Nếu mất máu đỏ khi đứng ➔ Quét tìm thanh SP xanh Cyan gục ngã bằng bộ lọc hình thái học ngang (kernel 8x1).
-                  Khi tìm thấy thanh SP (bw >= 8, bh <= 6):
-                  + Kiểm tra vị trí tụt thấp (dy_offset >= 11): Nhân vật ngã gục xuống sàn nên thanh SP thụt sâu xuống.
-                  + Quét ngược lên trên 1..6px: Kiểm tra phía trên không còn máu đỏ HP (red_above <= 3).
-                  ➔ Khẳng định 100% THÀNH VIÊN ĐÃ GỤC NGÃ (Tập trung tuyệt đối vào nhánh gục ngã, loại bỏ hoàn toàn nhận diện nhầm).
+        Nhận diện thành viên gục ngã (chết) chuẩn xác 100% dựa trên tọa độ lòng trong thanh HP và SP:
+        - Vùng quét lòng trong (Inner Fill): Bỏ viền kim loại ngoài, chỉ quét phần hiển thị màu (w=62, h=4).
+        - Điều kiện 1 (Có thành viên/pet tham chiến): Dải màu Cyan SP (B>=140, G>=100, R<=80) >= 3px.
+          -> Ngay cả khi cạn kiệt SP còn 1-2%, vẫn có >= 3px xanh -> Không bao giờ bị bỏ qua nhầm.
+          -> Slot trống không có nhân vật/pet: 0px xanh -> Bỏ qua ngay.
+        - Điều kiện 2 (Thành viên thực sự gục ngã): Dải máu đỏ HP (R>=140, G<=80, B<=80) <= 1px (thực tế 0px).
+          -> Khi còn sống (kể cả sắp chết còn ít máu): Luôn có vệt đỏ > 1px -> Không bao giờ hồi sinh nhầm.
+          -> Khi gục ngã (chết hẳn, máu về 0): Máu đỏ cạn sạch 0px -> Kích hoạt cứu ngay.
         """
         screen = self._capture_screen_fast(dnconsole_path, tab_index, max_cache_age=0.0)
         if screen is None or screen.size == 0:
@@ -1670,66 +1706,46 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             screen = cv2.resize(screen, (1280, 720), interpolation=cv2.INTER_LINEAR)
 
         dead_list = []
-        kernel_h = cv2.getStructuringElement(cv2.MORPH_RECT, (8, 1))
 
         for m in self._TEAM_HP_MEMBERS:
-            x, y = m["x"], m["y"]
+            # Lấy vùng lòng trong ruột thanh (Inner Fill): x+1, w=62, h=4 (loại bỏ hoàn toàn viền kim loại ngoài)
+            x_hp = m["hp_x"] + 1
+            y_hp = m["hp_y"] + 1
+            x_sp = m["sp_x"] + 1
+            y_sp = m["sp_y"]
+            w = 62
+            h_hp = 4
+            h_sp = 4
 
-            # --- TẦNG 1: KIỂM TRA MÁU ĐỎ HP TẠI VỊ TRÍ ĐỨNG CHUẨN (TỐI ƯU CHỐNG NHIỄU) ---
-            roi_standing_hp = screen[max(0, y):min(screen.shape[0], y + 5), max(0, x + 2):min(screen.shape[1], x + 35)]
-            if roi_standing_hp.size > 0:
-                b_s, g_s, r_s = cv2.split(roi_standing_hp)
-                red_standing = int(np.sum((r_s >= 160) & (g_s <= 65) & (b_s <= 65)))
-                # Phải có ít nhất 8px đỏ trở lên mới tính là còn sống (loại bỏ số damage và hiệu ứng skill rác)
-                if red_standing >= 8:
-                    continue
-            else:
-                red_standing = 0
-
-            # --- TẦNG 2: MÁU ĐỎ THẤP / MẤT MÁU ➔ XÁC MINH CHẮC CHẮN ĐÃ GỤC XUỐNG SÀN ---
-            # Vùng quét SP bao quát từ vị trí đứng đến vị trí thụt xuống khi ngã gục (y+4 đến y+28, x+2 đến x+35)
-            roi_sp = screen[max(0, y + 4):min(screen.shape[0], y + 28), max(0, x + 2):min(screen.shape[1], x + 35)]
+            # 1. KIỂM TRA ĐIỀU KIỆN 1: DẢI NĂNG LƯỢNG SP (Xác nhận slot có thành viên tham chiến)
+            roi_sp = screen[y_sp:y_sp + h_sp, x_sp:x_sp + w]
             if roi_sp.size == 0:
                 continue
 
             b_sp, g_sp, r_sp = cv2.split(roi_sp)
-            cyan_mask = ((b_sp >= 160) & (g_sp >= 100) & (r_sp <= 75)).astype(np.uint8) * 255
+            cyan_sp = int(np.sum((b_sp >= 140) & (g_sp >= 100) & (r_sp <= 80)))
 
-            # Lọc ngang dải SP: Loại bỏ sạch sẽ ngọc tròn và mảng áo to (kernel 8x1 bắt cả khi SP cạn)
-            cyan_bars = cv2.morphologyEx(cyan_mask, cv2.MORPH_OPEN, kernel_h)
-            num_c, _, stats_c, _ = cv2.connectedComponentsWithStats(cyan_bars)
+            # Slot trống không có thành viên / không mang pet (cyan_sp < 3px) -> Bỏ qua
+            if cyan_sp < 3:
+                continue
 
-            is_confirmed_dead = False
-            sp_px = 0
+            # 2. KIỂM TRA ĐIỀU KIỆN 2: DẢI MÁU ĐỎ HP (Xác nhận thành viên đã gục ngã)
+            roi_hp = screen[y_hp:y_hp + h_hp, x_hp:x_hp + w]
+            if roi_hp.size == 0:
+                continue
 
-            for i in range(1, num_c):
-                bx, by, bw, bh, area = stats_c[i]
-                if bw >= 8 and bh <= 6:
-                    # Tọa độ tuyệt đối của dải SP này trên màn hình
-                    abs_sp_x = x + 2 + bx
-                    abs_sp_y = y + 4 + by
-                    dy_offset = abs_sp_y - y
+            b_hp, g_hp, r_hp = cv2.split(roi_hp)
+            red_hp = int(np.sum((r_hp >= 140) & (g_hp <= 80) & (b_hp <= 80)))
 
-                    # CHỈ XÉT TRƯỜNG HỢP DUY NHẤT: ĐÃ NGÃ GỤC XUỐNG SÀN (dy_offset >= 11)
-                    # (Nhân vật còn đứng = còn sống 100%, chỉ gục ngã xuống sàn mới xác nhận đã chết)
-                    if dy_offset >= 11:
-                        # Quét ngược lên trên 1..6px kiểm tra không còn máu đỏ HP
-                        roi_above = screen[max(0, abs_sp_y - 6):abs_sp_y, abs_sp_x:min(screen.shape[1], abs_sp_x + bw)]
-                        if roi_above.size > 0:
-                            b_a, g_a, r_a = cv2.split(roi_above)
-                            red_above = int(np.sum((r_a >= 160) & (g_a <= 65) & (b_a <= 65)))
-                        else:
-                            red_above = 0
-
-                        # Phía trên không còn đỏ (red_above <= 3) ➔ 100% ĐÃ GỤC NGÃ!
-                        if red_above <= 3:
-                            is_confirmed_dead = True
-                            sp_px = area
-                            break
-
-            # Có dải SP thỏa mãn điều kiện gục ngã ➔ Xác nhận thành viên đã chết!
-            if is_confirmed_dead:
-                dead_list.append({**m, "red_pixels": red_standing, "cyan_sp": sp_px})
+            # Thành viên gục ngã khi máu đỏ cạn sạch về 0 (red_hp <= 1px)
+            if red_hp <= 1:
+                dead_list.append({
+                    **m,
+                    "x": m["hp_x"],
+                    "y": m["hp_y"],
+                    "red_pixels": red_hp,
+                    "cyan_sp": cyan_sp
+                })
 
         return dead_list
 
@@ -1965,9 +1981,22 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             choice = self.combo_phong_thu_target.get() if hasattr(self, 'combo_phong_thu_target') else "Chart"
             self.log_info(f"🛡️ [PHÒNG THỦ] Ô Kỹ Năng vừa tích BẬT ➔ Kích hoạt tiến trình [{skill_name}] (Chế độ: {choice}) trên Tab: {tab_name} (Index: {tab_index})...")
 
+            current_token = getattr(self, '_run_token', 0)
+            pt_token = getattr(self, '_thread_pt_token', None)
+            pt_tab = getattr(self, '_thread_pt_tab', None)
             if hasattr(self, '_thread_phong_thu') and self._thread_phong_thu and self._thread_phong_thu.is_alive():
-                return
-            self._thread_phong_thu = threading.Thread(target=self._run_phong_thu_standalone, args=(dnconsole_path, tab_name, tab_index), daemon=True)
+                if pt_token == current_token and pt_tab == tab_name:
+                    return
+                self._run_token = getattr(self, '_run_token', 0) + 1
+                current_token = self._run_token
+
+            self._thread_pt_token = current_token
+            self._thread_pt_tab = tab_name
+            self._thread_phong_thu = threading.Thread(
+                target=self._run_phong_thu_standalone,
+                args=(dnconsole_path, tab_name, tab_index, current_token),
+                daemon=True
+            )
             self._thread_phong_thu.start()
         else:
             self.log_info("🛑 [PHÒNG THỦ] Ô Kỹ Năng vừa bỏ tích ➔ Đã ngắt tiến trình song song!")
@@ -2330,7 +2359,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         self.after(0, self.log_info, f"✅ [{skill_tag} - TEAM] Đã buff xong {target_label}! Mục tiêu tiếp theo: {next_target_info['name']} ({next_target_info['coord'][0]}, {next_target_info['coord'][1]})...")
         return next_idx
 
-    def _run_phong_thu_standalone(self, dnconsole_path: str, tab_name: str, tab_index: str):
+    def _run_phong_thu_standalone(self, dnconsole_path: str, tab_name: str, tab_index: str, run_token: int = None):
         """Worker thread thực thi Kỹ Năng Phòng Thủ (Kết Giới / Linh Kính / Băng Tường)"""
         try:
             turn_mode = 1
@@ -2339,6 +2368,8 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             last_choice = None
 
             while self.var_phong_thu.get() and not self.stop_requested and not (hasattr(self, '_stop_event') and self._stop_event.is_set()):
+                if run_token is not None and getattr(self, '_run_token', 0) != run_token:
+                    break
                 skill_name = self.combo_phong_thu_skill.get() if hasattr(self, 'combo_phong_thu_skill') else "Kết Giới"
                 skill_cfg = self._COMBAT_DEFENSE_CONFIGS.get(skill_name, self._COMBAT_DEFENSE_CONFIGS.get("Kết Giới"))
                 choice = self.combo_phong_thu_target.get() if hasattr(self, 'combo_phong_thu_target') else "Chart"
@@ -2357,14 +2388,16 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                 elif choice == "Team":
                     team_target_idx = self._handle_combat_defense_team(dnconsole_path, tab_name, tab_index, team_target_idx, skill_cfg)
                 else:
-                    self._sleep_with_stop_check(0.5, check_active=self.var_phong_thu.get)
+                    self._sleep_with_stop_check(0.5, check_active=self.var_phong_thu.get, run_token=run_token)
 
             if not self.stop_requested and not self.var_phong_thu.get():
-                self.after(0, self.log_info, "🛑 [Phòng Thủ] Đã dừng tiến trình Phòng Thủ theo yêu cầu bỏ tích ô.")
+                if run_token is None or getattr(self, '_run_token', 0) == run_token:
+                    self.after(0, self.log_info, "🛑 [Phòng Thủ] Đã dừng tiến trình Phòng Thủ theo yêu cầu bỏ tích ô.")
         except Exception as e:
             self.after(0, self.log_error, f"❌ Lỗi luồng thực thi Phòng Thủ song song: {str(e)}")
         finally:
-            self._thread_phong_thu = None
+            if run_token is None or getattr(self, '_thread_pt_token', None) == run_token:
+                self._thread_phong_thu = None
 
     def _on_switch_C_toggled(self):
         """Callback công tắc Card DỊ GIỚI ĐÊM (C): Gạt ON ➔ Chạy hoặc xếp hàng tuần tự; Gạt OFF ➔ Dừng tiến trình card này"""
@@ -3977,18 +4010,34 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         self.save_config()
 
         with self._card_AB_lock:
-            if self._card_AB_coordinator_running:
+            current_token = getattr(self, '_run_token', 0)
+            coord_alive = hasattr(self, '_thread_coordinator') and self._thread_coordinator and self._thread_coordinator.is_alive()
+            coord_token = getattr(self, '_coordinator_token', None)
+            coord_tab = getattr(self, '_coordinator_tab', None)
+
+            if self._card_AB_coordinator_running and coord_alive and coord_token == current_token and coord_tab == tab_name:
                 self.log_info(f"📋 [HÀNG ĐỢI] Card {card_name} đã BẬT ON và được xếp hàng chờ! Sẽ tự động thực thi ngay sau khi Card đang chạy hoàn thành.")
                 return
+
+            if coord_alive and (coord_token != current_token or coord_tab != tab_name):
+                self._run_token = getattr(self, '_run_token', 0) + 1
+                current_token = self._run_token
+
             self._card_AB_coordinator_running = True
             self._reset_stop_flags()
+            current_token = getattr(self, '_run_token', 0)
+            self._coordinator_token = current_token
+            self._coordinator_tab = tab_name
             self.log_info(f"⚡ [BẬT CÔNG TẮC] Khởi động luồng điều phối hoạt động cho Card {card_name} trên Tab: {tab_name}...")
-            threading.Thread(target=self._run_card_AB_coordinator, daemon=True).start()
+            self._thread_coordinator = threading.Thread(target=self._run_card_AB_coordinator, args=(current_token,), daemon=True)
+            self._thread_coordinator.start()
 
-    def _run_card_AB_coordinator(self):
+    def _run_card_AB_coordinator(self, run_token: int = None):
         """Worker thread điều phối chạy tuần tự các Card (A ➔ B ➔ C ➔ D) theo hàng đợi chống xung đột"""
         try:
             while not self.stop_requested:
+                if run_token is not None and getattr(self, '_run_token', 0) != run_token:
+                    break
                 tab_name, tab_index = self._get_selected_ld_info()
                 if tab_index is None:
                     self.after(0, self.log_error, "Không tìm thấy thông tin Tab LDPlayer hợp lệ.")
@@ -4103,7 +4152,8 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             self.after(0, self.log_error, f"❌ Lỗi hệ thống điều phối Card: {str(e)}")
         finally:
             with self._card_AB_lock:
-                self._card_AB_coordinator_running = False
+                if run_token is None or getattr(self, '_coordinator_token', None) == run_token:
+                    self._card_AB_coordinator_running = False
 
     def xu_ly_nut_chay(self):
         """Hàm tương thích ngược: Tự động kích hoạt luồng điều phối cho các Card đang bật ON"""
@@ -4116,13 +4166,15 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             return
         self._trigger_card_AB_workflow("Tổng Hợp")
 
-    def _sleep_with_stop_check(self, seconds: float, check_active=None) -> bool:
-        """Tạm dừng ngủ ngầm: Đánh thức trong vòng 0.05s khi bấm Dừng tổng hoặc khi check_active() trả về False."""
+    def _sleep_with_stop_check(self, seconds: float, check_active=None, run_token: int = None) -> bool:
+        """Tạm dừng ngủ ngầm: Đánh thức trong vòng 0.05s khi bấm Dừng tổng, đổi tab/token hoặc khi check_active() trả về False."""
         # step 0.05s: giảm 60% CPU so với 0.02s cũ, phản hồi ngắt trong 50ms - đủ nhanh cho mọi tình huống
         step = 0.05
         deadline = time.time() + seconds
         while time.time() < deadline:
             if self.stop_requested or (hasattr(self, '_stop_event') and self._stop_event.is_set()):
+                return True
+            if run_token is not None and getattr(self, '_run_token', 0) != run_token:
                 return True
             if check_active is not None and not check_active():
                 return True
@@ -4142,10 +4194,14 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
     def dung_tat_ca_hoat_dong(self):
         """Nút Dừng tổng: Ngắt lập tức tất cả các card có trong tool & tiến trình mở game TS Origin"""
         self.stop_requested = True
+        self._run_token = getattr(self, '_run_token', 0) + 1
         if hasattr(self, '_stop_event'):
             self._stop_event.set()
         with self._card_AB_lock:
             self._card_AB_coordinator_running = False
+
+        self._screen_cache = {}
+        self._active_adb_device = {}
 
         for prefix in ["A", "B", "C", "D"]:
             switch_attr = f"var_switch_{prefix}"
@@ -5806,6 +5862,165 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             time.sleep(0.3)
         return True
 
+    def _execute_card_d_buff_cycle(self, dnconsole_path: str, tab_index: str, log_tag: str = "40 NPC / Nhị Kiều", is_nhi_kieu: bool = False, active_skill: str = "Buff HP / SP", is_auto_mode: bool = False, is_mid_battle: bool = False):
+        """Thực thi Chuỗi Buff (Cơ chế Hồi Sinh Trọng Điểm Thông Minh) lặp lại liên tục cho 40 NPC và Nhị Kiều (hỗ trợ cả Chế độ Thường và Chế độ Auto)."""
+        if self._should_stop_card_D(): return
+
+        if not is_nhi_kieu and not is_auto_mode:
+            is_nhi_kieu = (
+                "nhikieu" in log_tag.lower() or 
+                "nhị kiều" in log_tag.lower() or 
+                "nhi kieu" in log_tag.lower() or 
+                (hasattr(self, 'var_D4') and self.var_D4.get() and "40 npc" not in log_tag.lower())
+            )
+
+        # 1. BƯỚC ĐỆM (Chỉ thực thi khi ở chế độ Auto của Nhị Kiều hoặc Nhận Đội)
+        if is_auto_mode:
+            step_res = self._wait_enter_battle_auto(dnconsole_path, tab_index, log_tag, active_skill, is_mid_battle=is_mid_battle)
+            if step_res in ("STOP", "SWITCH_SKILL"):
+                return step_res
+
+        def _wait_for_turn_start():
+            while not self._should_stop_card_D():
+                # 0. Kiểm tra thay đổi kỹ năng realtime giữa trận
+                if active_skill and hasattr(self, 'var_D_skill'):
+                    cur_sk = self.var_D_skill.get()
+                    if cur_sk != active_skill:
+                        self.after(0, self.log_info, f"🔄 [{log_tag} - Realtime] Phát hiện đổi kỹ năng giữa trận: '{active_skill}' ➔ '{cur_sk}'!")
+                        return "SWITCH_SKILL"
+
+                # 1. Kiểm tra hết trận đánh
+                if is_auto_mode:
+                    vt_chk_x, vt_chk_y = self._find_template_on_screen(
+                        dnconsole_path, tab_index, "card_f/f_vaotran.png",
+                        threshold=0.80, region=(1215, 0, 1280, 45)
+                    )
+                    if vt_chk_x is not None and vt_chk_y is not None:
+                        self.after(0, self.log_info, f"🎯 [{log_tag}] Phát hiện 'card_f/f_vaotran.png' xuất hiện lại tại ({vt_chk_x}, {vt_chk_y}) ➔ Trận đấu đã kết thúc!")
+                        return "END_BATTLE"
+                    ht_chk_x, ht_chk_y = self._find_template_on_screen(
+                        dnconsole_path, tab_index, "card_d/d_hoanthanh.png",
+                        threshold=0.70, region=(905, 0, 985, 70)
+                    )
+                    if ht_chk_x is not None and ht_chk_y is not None:
+                        self.after(0, self.log_info, f"🎯 [{log_tag}] Phát hiện 'card_d/d_hoanthanh.png' ➔ Kết thúc trận đánh (Nhị Kiều Auto)!")
+                        return "END_BATTLE"
+                elif is_nhi_kieu:
+                    ht_chk_x, ht_chk_y = self._find_template_on_screen(
+                        dnconsole_path, tab_index, "card_d/d_hoanthanh.png",
+                        threshold=0.70, region=(905, 0, 985, 70)
+                    )
+                    if ht_chk_x is not None and ht_chk_y is not None:
+                        self.after(0, self.log_info, f"🎯 Phát hiện 'card_d/d_hoanthanh.png' tại ({ht_chk_x}, {ht_chk_y}) ➔ Kết thúc trận đánh (Nhị Kiều)!")
+                        return "END_BATTLE"
+                else:
+                    xd_chk_x, xd_chk_y = self._find_template_on_screen(
+                        dnconsole_path, tab_index, "card_d/40npc/d_xacdinh.png",
+                        threshold=0.80, region=(275, 540, 980, 670)
+                    )
+                    if xd_chk_x is not None and xd_chk_y is not None:
+                        self.after(0, self.log_info, f"🎯 Phát hiện 'card_d/40npc/d_xacdinh.png' tại ({xd_chk_x}, {xd_chk_y}) ➔ Kết thúc trận đánh (40 NPC)!")
+                        return "END_BATTLE"
+
+                # 2. Quét f_dung.png báo hiệu lượt mới
+                dung_x, dung_y = self._find_template_on_screen(
+                    dnconsole_path, tab_index, "card_f/f_dung.png",
+                    threshold=0.80, region=(640, 0, 1280, 145)
+                )
+                if dung_x is not None and dung_y is not None:
+                    self.after(0, self.log_info, f"🎯 [{log_tag}] Phát hiện 'card_f/f_dung.png' tại ({dung_x}, {dung_y}) ➔ Bắt đầu lượt mới!")
+                    start_tt = time.time()
+                    while time.time() - start_tt < 0.5:
+                        if self._should_stop_card_D(): return "END_BATTLE"
+                        tt_x, tt_y = self._find_template_on_screen(
+                            dnconsole_path, tab_index, "card_f/f_tieptheo.png",
+                            threshold=0.80, region=(1050, 530, 1165, 680)
+                        )
+                        if tt_x is not None and tt_y is not None:
+                            self._exec_cmd([dnconsole_path, "adb", "--index", str(tab_index), "--command", f"shell input tap {tt_x} {tt_y}"])
+                            time.sleep(0.3)
+                            break
+                        time.sleep(0.25)
+                    return "START_TURN"
+
+                if self._sleep_card_D(0.5): return "END_BATTLE"
+            return "END_BATTLE"
+
+        while not self._should_stop_card_D():
+            # Phase 1: Buff HP (5 Lần liên tiếp: hp_round = 1 ➔ 5)
+            for hp_round in range(1, 6):
+                if self._should_stop_card_D(): return
+                self.after(0, self.log_info, f"[{log_tag}] Buff HP Lần {hp_round}/5 - Chờ lượt...")
+                if active_skill and hasattr(self, 'var_D_skill') and self.var_D_skill.get() != active_skill:
+                    return "SWITCH_SKILL"
+                res = _wait_for_turn_start()
+                if res in ("END_BATTLE", "SWITCH_SKILL"):
+                    return res
+
+                # BƯỚC ƯU TIÊN: Kiểm tra Hồi Sinh Trọng Điểm Thông Minh (>= 2 người chết)
+                self.after(0, self.log_info, f"[{log_tag}] Kiểm tra Hồi Sinh...")
+                handled_priority = self._handle_priority_hs(dnconsole_path, "", tab_index, log_tag=f"{log_tag} - HS", is_card_d=True)
+                if handled_priority:
+                    self.after(0, self.log_info, f"⭐ [{log_tag} - Buff] Đã hoàn tất Thao Tác Ưu Tiên (Hồi Sinh) trong lượt này!")
+                    continue
+
+                if self._should_stop_card_D(): return
+
+                self.after(0, self.log_info, f"[{log_tag} - Buff HP] Lần {hp_round}/5: Tìm skill HP...")
+                hp_x, hp_y = self._find_template_on_screen(dnconsole_path, tab_index, "card_f/skill/f_hp.png", threshold=0.85, region=(640, 0, 1280, 145))
+                if hp_x is None or hp_y is None:
+                    self.after(0, self.log_info, f"⚠️ [{log_tag} - Buff HP] KHÔNG thấy 'card_f/skill/f_hp.png' (85%) ➔ Tap 2 lần nút Auto (190, 140) hoãn 5s...")
+                    self._tap_login_auto_twice(dnconsole_path, tab_index)
+                    if self._sleep_card_D(5.0): return
+                else:
+                    self.after(0, self.log_info, f"🎯 [{log_tag} - Buff HP] Đã thấy 'card_f/skill/f_hp.png' tại ({hp_x}, {hp_y}) ➔ Tap")
+                    self._exec_cmd([dnconsole_path, "adb", "--index", str(tab_index), "--command", f"shell input tap {hp_x} {hp_y}"])
+                    if self._sleep_card_D(0.2): return
+
+                    self.after(0, self.log_info, f"🎯 [{log_tag} - Buff HP] Tap mục tiêu đồng đội (905, 515)")
+                    self._exec_cmd([dnconsole_path, "adb", "--index", str(tab_index), "--command", "shell input tap 905 515"])
+                    if self._sleep_card_D(0.2): return
+
+                    self.after(0, self.log_info, f"🎯 [{log_tag} - Buff HP] Tap 2 lần nút Auto (190, 140)")
+                    self._tap_login_auto_twice(dnconsole_path, tab_index)
+                    if self._sleep_card_D(5.0): return
+
+            # Phase 2: Buff SP (1 Lần - Lượt 6)
+            if self._should_stop_card_D(): return "STOP"
+            if active_skill and hasattr(self, 'var_D_skill') and self.var_D_skill.get() != active_skill:
+                return "SWITCH_SKILL"
+            self.after(0, self.log_info, f"[{log_tag}] Buff SP Lần 1/1 (Lượt 6) - Chờ lượt...")
+            res = _wait_for_turn_start()
+            if res in ("END_BATTLE", "SWITCH_SKILL"):
+                return res
+
+            self.after(0, self.log_info, f"[{log_tag}] Kiểm tra Hồi Sinh (SP)...")
+            handled_priority = self._handle_priority_hs(dnconsole_path, "", tab_index, log_tag=f"{log_tag} - HS", is_card_d=True)
+            if handled_priority:
+                self.after(0, self.log_info, f"⭐ [{log_tag} - Buff] Đã hoàn tất Thao Tác Ưu Tiên (Hồi Sinh) trong lượt này!")
+                continue
+
+            if self._should_stop_card_D(): return
+
+            self.after(0, self.log_info, f"[{log_tag} - Buff SP] Lần 1/1: Tìm skill SP...")
+            sp_x, sp_y = self._find_template_on_screen(dnconsole_path, tab_index, "card_f/skill/f_sp.png", threshold=0.85, region=(640, 0, 1280, 145))
+            if sp_x is None or sp_y is None:
+                self.after(0, self.log_info, f"⚠️ [{log_tag} - Buff SP] KHÔNG thấy 'card_f/skill/f_sp.png' (85%) ➔ Tap 2 lần nút Auto (190, 140) hoãn 5s...")
+                self._tap_login_auto_twice(dnconsole_path, tab_index)
+                if self._sleep_card_D(5.0): return
+            else:
+                self.after(0, self.log_info, f"🎯 [{log_tag} - Buff SP] Đã thấy 'card_f/skill/f_sp.png' tại ({sp_x}, {sp_y}) ➔ Tap")
+                self._exec_cmd([dnconsole_path, "adb", "--index", str(tab_index), "--command", f"shell input tap {sp_x} {sp_y}"])
+                if self._sleep_card_D(0.2): return
+
+                self.after(0, self.log_info, f"🎯 [{log_tag} - Buff SP] Tap mục tiêu đồng đội (905, 515)")
+                self._exec_cmd([dnconsole_path, "adb", "--index", str(tab_index), "--command", "shell input tap 905 515"])
+                if self._sleep_card_D(0.2): return
+
+                self.after(0, self.log_info, f"🎯 [{log_tag} - Buff SP] Tap 2 lần nút Auto (190, 140)")
+                self._tap_login_auto_twice(dnconsole_path, tab_index)
+                if self._sleep_card_D(5.0): return
+
     def _execute_card_d_buff_cycle_auto(self, dnconsole_path: str, tab_index: str, log_tag: str = "Nhị Kiều Auto", active_skill: str = "Buff HP / SP", is_mid_battle: bool = False):
         """Wrapper tương thích: Chuyển tiếp sang _execute_card_d_buff_cycle với is_auto_mode=True.
         Chuyên dụng cho Nhị Kiều Đỉnh 10 & Nhận Đội — tái sử dụng toàn bộ logic từ hàm thống nhất."""
@@ -5953,9 +6168,17 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
 
             if self._should_stop_card_D(): return
 
-            # Kiểm tra Thao Tác Ưu Tiên Hồi Sinh (Hồi Sinh Trọng Điểm Thông Minh >= 2 người chết)
-            self.after(0, self.log_info, f"🔍 [{log_tag} - {skill_name} - TEAM] [LƯỢT {turn}] [{target_label}] Kiểm tra Thao Tác Ưu Tiên (Hồi Sinh)...")
-            handled_priority = self._handle_priority_hs(dnconsole_path, "", tab_index, log_tag=f"{log_tag} - {skill_name} HS", is_card_d=True)
+            # Kiểm tra Thao Tác Ưu Tiên Hồi Sinh (Tương tự chế độ Team ở Card Chiến Đấu: >= 3 người chết, vị trí đảo ngược)
+            self.after(0, self.log_info, f"🔍 [{log_tag} - {skill_name} - TEAM] [LƯỢT {turn}] [{target_label}] Kiểm tra Thao Tác Ưu Tiên (Hồi Sinh >= 3 người chết, vị trí đảo ngược)...")
+            handled_priority = self._handle_priority_hs(
+                dnconsole_path, "", tab_index,
+                log_tag=f"{log_tag} - {skill_name} HS",
+                is_card_d=True,
+                is_linh_kinh=(skill_name == "Linh Kính"),
+                is_ket_gioi=(skill_name == "Kết Giới"),
+                min_dead=3,
+                reverse_priority=True
+            )
             if handled_priority:
                 self.after(0, self.log_info, f"⭐ [{log_tag} - {skill_name} - TEAM] Đã hoàn tất Thao Tác Ưu Tiên (Hồi Sinh) trong lượt này! Giữ nguyên [LƯỢT {turn}] [{target_label}] để tiếp tục chu kỳ buff...")
                 continue
@@ -6178,21 +6401,48 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
     def _detect_40_npc_start_position(self, dnconsole_path: str, tab_index: str) -> str:
         """
         Quét nhận diện vị trí thông minh cho mốc Auto của 40 NPC:
-        Sử dụng vùng ROI (275, 540, 980, 670):
-        1. d_xacdinh.png (ngưỡng 80%) -> 'XAC_DINH'  (Đang ở Lôi Đài chuẩn bị vào round tiếp theo)
-        2. d_vaotran.png (ngưỡng 75%) -> 'VAO_TRAN'  (Đang mở hộp thoại đăng ký vào trận)
-        Quét 2 chu kỳ (mỗi ảnh ~1.0s).
-        Nếu không thấy ảnh nào -> Trả về 'FULL' (Chạy toàn bộ quy trình Auto từ đầu).
+        Thứ tự quét (thấy ảnh nào trước thì ngưng ngay và chạy thao tác tương ứng):
+        1. card_d/40npc/d_quangtruong.png (ROI 1060, 0, 1280, 40, ngưỡng 80%):
+           -> Trả về 'FULL' (Chạy toàn bộ quy trình Auto từ đầu).
+        2. Quét vùng ROI (275, 540, 980, 670) qua 2 chu kỳ tìm ảnh:
+           - card_d/40npc/d_xacdinh.png (ngưỡng 80%) -> 'XAC_DINH'  (Đang ở Lôi Đài chuẩn bị vào round tiếp theo)
+           - card_d/40npc/d_vaotran.png (ngưỡng 75%) -> 'VAO_TRAN'  (Đang mở hộp thoại đăng ký vào trận)
+           (Bỏ thao tác trả về FULL khi không thấy cả 2 ảnh ở bước này, chuyển tiếp sang bước 3).
+        3. card_d/40npc/d_loidai.png (ROI 1060, 0, 1280, 40, ngưỡng 80%):
+           -> Trả về 'LOI_DAI'.
+        Fallback: Nếu không thấy bất kỳ ảnh nào sau cả 3 bước -> Mặc định trả về 'FULL'.
         """
         if self._should_stop_card_D(): return "FULL"
-        self.after(0, self.log_info, "👁️ [40 NPC Auto] Quét nhận diện vị trí thông minh ('d_xacdinh.png', 'd_vaotran.png')...")
+        self.after(0, self.log_info, "👁️ [40 NPC Auto] Bắt đầu quét nhận diện vị trí thông minh theo thứ tự ưu tiên...")
 
+        # -------------------------------------------------------------
+        # 1. Quét card_d/40npc/d_quangtruong.png (80%, ROI 1060, 0, 1280, 40)
+        # -------------------------------------------------------------
+        self.after(0, self.log_info, "👁️ [40 NPC Auto - Bước 1] Quét 'card_d/40npc/d_quangtruong.png' (ROI 1060, 0, 1280, 40, 80%)...")
+        t_start = time.time()
+        while time.time() - t_start < 1.2:
+            if self._should_stop_card_D(): return "FULL"
+            qt_x, qt_y = self._find_template_on_screen(
+                dnconsole_path, tab_index, "card_d/40npc/d_quangtruong.png",
+                threshold=0.80, region=(1060, 0, 1280, 40)
+            )
+            if qt_x is not None and qt_y is not None:
+                self.after(0, self.log_info, f"🎯 [40 NPC Auto] Phát hiện Quảng Trường 'card_d/40npc/d_quangtruong.png' tại ({qt_x}, {qt_y}) ➔ Chạy Nhánh đầy đủ (FULL)!")
+                return "FULL"
+            if self._sleep_card_D(0.3): return "FULL"
+
+        # -------------------------------------------------------------
+        # 2. Quét vùng ROI (275, 540, 980, 670) qua 2 chu kỳ tìm ảnh:
+        #    - d_xacdinh.png (80%) -> XAC_DINH
+        #    - d_vaotran.png (75%) -> VAO_TRAN
+        # -------------------------------------------------------------
+        self.after(0, self.log_info, "👁️ [40 NPC Auto - Bước 2] Quét ROI (275, 540, 980, 670) tìm 'd_xacdinh.png' & 'd_vaotran.png' qua 2 chu kỳ...")
         for cycle in range(1, 3):
             if self._should_stop_card_D(): return "FULL"
             if cycle > 1:
-                self.after(0, self.log_info, "🔄 [40 NPC Auto] Đang thử lại lượt quét nhận diện thứ 2...")
+                self.after(0, self.log_info, "🔄 [40 NPC Auto - Bước 2] Đang thử lại lượt quét nhận diện thứ 2...")
 
-            # 1. Quét d_xacdinh.png (80%, ROI 275, 540, 980, 670)
+            # 2.1 Quét d_xacdinh.png (80%, ROI 275, 540, 980, 670)
             t_start = time.time()
             while time.time() - t_start < 1.0:
                 if self._should_stop_card_D(): return "FULL"
@@ -6205,7 +6455,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                     return "XAC_DINH"
                 if self._sleep_card_D(0.3): return "FULL"
 
-            # 2. Quét d_vaotran.png (75%, ROI 275, 540, 980, 670)
+            # 2.2 Quét d_vaotran.png (75%, ROI 275, 540, 980, 670)
             t_start = time.time()
             while time.time() - t_start < 1.0:
                 if self._should_stop_card_D(): return "FULL"
@@ -6218,7 +6468,23 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                     return "VAO_TRAN"
                 if self._sleep_card_D(0.3): return "FULL"
 
-        self.after(0, self.log_info, "ℹ️ [40 NPC Auto] Không phát hiện 'd_xacdinh.png' hay 'd_vaotran.png' ➔ Chạy đầy đủ quy trình Auto từ đầu (Tổ Đội / Kỹ Năng / Hẹn Giờ).")
+        # -------------------------------------------------------------
+        # 3. Quét card_d/40npc/d_loidai.png (80%, ROI 1060, 0, 1280, 40)
+        # -------------------------------------------------------------
+        self.after(0, self.log_info, "👁️ [40 NPC Auto - Bước 3] Quét 'card_d/40npc/d_loidai.png' (ROI 1060, 0, 1280, 40, 80%)...")
+        t_start = time.time()
+        while time.time() - t_start < 1.2:
+            if self._should_stop_card_D(): return "FULL"
+            ld_x, ld_y = self._find_template_on_screen(
+                dnconsole_path, tab_index, "card_d/40npc/d_loidai.png",
+                threshold=0.80, region=(1060, 0, 1280, 40)
+            )
+            if ld_x is not None and ld_y is not None:
+                self.after(0, self.log_info, f"🎯 [40 NPC Auto] Phát hiện Lôi Đài 'card_d/40npc/d_loidai.png' tại ({ld_x}, {ld_y}) ➔ Đang ở trong Lôi Đài!")
+                return "LOI_DAI"
+            if self._sleep_card_D(0.3): return "FULL"
+
+        self.after(0, self.log_info, "ℹ️ [40 NPC Auto] Không phát hiện ảnh nhận diện vị trí nào ➔ Chạy đầy đủ quy trình Auto từ đầu (FULL).")
         return "FULL"
 
     def _run_40_npc_su_kien_tang(self, dnconsole_path: str, tab_index: str, detected_pos: str = None, **kwargs):
@@ -6246,7 +6512,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             self._run_40_npc_loidai_battle_loop(dnconsole_path, tab_index)
             return
 
-        def _run_steps_1_to_5_7():
+        def _step_1_wait_time():
             # BƯỚC 1 (Chờ Hẹn Giờ): Vòng lặp chờ đồng hồ hệ thống chạm mốc theo ô ghi giờ.
             if self._should_stop_card_D(): return
             time_val = self.var_D_time.get().strip() if hasattr(self, 'var_D_time') else "20:00"
@@ -6278,6 +6544,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             if self._should_stop_card_D(): return
             self.after(0, self.log_info, f"🎯 [Card D - 40 NPC - Bước 1] Đã đến mốc hẹn giờ {time_val}!")
 
+        def _step_2_team_outside():
             # BƯỚC 2: Kiểm Tra Đội Trước Khi vào Cổng Lôi Đài (Không cần gán quân sư)
             if self._should_stop_card_D(): return
             if hasattr(self, 'var_D2') and self.var_D2.get():
@@ -6290,8 +6557,8 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                         log_tag="Card D - 40 NPC - Bước 2",
                         stop_check=self._should_stop_card_D
                     )
-            if self._should_stop_card_D(): return
 
+        def _step_3_enter_portal():
             # BƯỚC 3 (Vào Lôi Đài):
             # 3.1: Quét & Tap d_conglt.png (80%, ROI 0,400,1280,720) -> Hoãn 2.0s
             if self._should_stop_card_D(): return
@@ -6323,7 +6590,8 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                     break
                 if self._sleep_card_D(0.5): return
 
-            # BƯỚC 4: Kiểm Tra Đội & Gán Quân Sư
+        def _step_4_team_and_quan_su():
+            # BƯỚC 4: Kiểm Tra Đội & Gán Quân Sư Trong Lôi Đài (Card E đúng 1 lần duy nhất)
             if self._should_stop_card_D(): return
             if hasattr(self, 'var_D2') and self.var_D2.get():
                 list_B = list(getattr(self, 'list_E_B', []))
@@ -6335,8 +6603,8 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                         log_tag="Card D - 40 NPC - Bước 4",
                         stop_check=self._should_stop_card_D
                     )
-            if self._should_stop_card_D(): return
 
+        def _step_5_first_battle_movement():
             # BƯỚC 5 (Vào trận đầu tiên - 9 Thao tác):
             if self._should_stop_card_D(): return
             self.after(0, self.log_info, "🚀 [Card D - 40 NPC - Bước 5] Bắt đầu 9 Thao tác vào trận đầu tiên...")
@@ -6390,14 +6658,27 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                 if self._sleep_card_D(0.4): return
 
         # -------------------------------------------------------------
-        # ĐIỀU PHỐI: NẾU THẤY d_vaotran.png THÌ BỎ QUA BƯỚC 1 -> 5.7, NHẢY THẲNG VÀO 5.8
-        # NẾU KHÔNG THẤY ẢNH NÀO THÌ CHẠY ĐẦY ĐỦ BƯỚC 1 -> 5.7 TRƯỚC KHI VÀO 5.8
+        # ĐIỀU PHỐI: PHÂN NHÁNH THỰC THI THEO VỊ TRÍ NHẬN DIỆN
         # -------------------------------------------------------------
         if detected_pos == "VAO_TRAN":
             self.after(0, self.log_info, "🎯 [Card D - 40 NPC] Phát hiện 'd_vaotran.png' ➔ Bỏ qua Hẹn Giờ, Cổng & Di chuyển, nhảy thẳng vào BƯỚC 5.8 (Vào Trận)!")
+        elif detected_pos == "LOI_DAI":
+            self.after(0, self.log_info, "🎯 [Card D - 40 NPC] Phát hiện 'd_loidai.png' ➔ Đang ở trong Lôi Đài: Bỏ qua Hẹn Giờ & Vào Cổng, kiểm tra Tổ Đội (nếu tích) rồi chạy từ Bước 5 trở đi!")
+            _step_4_team_and_quan_su()
+            if self._should_stop_card_D(): return
+            _step_5_first_battle_movement()
+            if self._should_stop_card_D(): return
         else:
             self.after(0, self.log_info, "🚀 [Card D - 40 NPC] Bắt đầu Quy Trình Auto đầy đủ (Bước 1 ➔ Bước 5.7)...")
-            _run_steps_1_to_5_7()
+            _step_1_wait_time()
+            if self._should_stop_card_D(): return
+            _step_2_team_outside()
+            if self._should_stop_card_D(): return
+            _step_3_enter_portal()
+            if self._should_stop_card_D(): return
+            _step_4_team_and_quan_su()
+            if self._should_stop_card_D(): return
+            _step_5_first_battle_movement()
             if self._should_stop_card_D(): return
 
         # 5.8: Quét & Tap card_d/40npc/d_vaotran.png (75%, ROI 275,540,980,670) -> Hoãn 0.4s
@@ -6615,8 +6896,11 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         # --- NHÁNH 3.1: TỔ ĐỘI TÍCH -> CHẠY TỔ ĐỘI RỒI ĐẾN CÁC MỐC NHỊ KIỀU / 40 NPC ---
         if self._should_stop_card_D(): return
         if self.var_D2.get():
-            if is_40npc_auto and detected_pos_40npc in ("VAO_TRAN", "XAC_DINH"):
-                self.after(0, self.log_info, f"ℹ️ [Sự Kiện - Tổ Đội] Đã phát hiện vị trí trong trận ('{detected_pos_40npc}') ➔ Bỏ qua mời Tổ Đội Card E ngoài sảnh để tránh tắt hộp thoại Lôi Đài.")
+            if is_40npc_auto and detected_pos_40npc in ("VAO_TRAN", "XAC_DINH", "LOI_DAI"):
+                if detected_pos_40npc == "LOI_DAI":
+                    self.after(0, self.log_info, "ℹ️ [Sự Kiện - Tổ Đội] Đã ở trong Lôi Đài ('LOI_DAI') ➔ Bỏ qua mời Tổ Đội ngoài sảnh (sẽ gọi Card E trực tiếp trong Lôi Đài).")
+                else:
+                    self.after(0, self.log_info, f"ℹ️ [Sự Kiện - Tổ Đội] Đã phát hiện vị trí trong trận ('{detected_pos_40npc}') ➔ Bỏ qua mời Tổ Đội Card E ngoài sảnh để tránh tắt hộp thoại Lôi Đài.")
             else:
                 self.after(0, self.log_info, "🚀 [Sự Kiện - Tổ Đội] Khởi chạy gọi mời thành viên tạo tổ đội (Card E)...")
                 self._execute_card_E_for_mode(dnconsole_path, tab_name, tab_index, mode=1)
@@ -7027,52 +7311,66 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             _swipe_dpad_direction("DOWN_RIGHT", 1000)
             if self._sleep_card_D(0.5): return
 
-            # 7.3: Kiểm tra hoàn thành theo mốc tầng
-            self.after(0, self.log_info, f"👁️ [{mode_name} - Lượt {loop_idx}] Giai Đoạn 7.3: Quét kiểm tra hoàn thành...")
-            if target_finish_img:
-                target_img = target_finish_img
-            else:
-                target_img = "card_d/nhikieu/d_dinh.png"
+            # 7.3: Kiểm tra hoàn thành theo mốc tầng (Ưu tiên 1: d_dinh -> Ưu tiên 2: d_thap14)
+            self.after(0, self.log_info, f"👁️ [{mode_name} - Lượt {loop_idx}] Giai Đoạn 7.3: Quét kiểm tra kết thúc (Ưu tiên: d_dinh -> d_thap14)...")
             
-            found_finish = False
-            # Nếu có số lượt lặp tối đa (ví dụ 3 lần), chỉ quét ở lượt cuối cùng để tránh thoát nhầm khi chưa tới đỉnh
-            if max_loops == 0 or loop_idx >= max_loops:
-                start_chk = time.time()
-                while time.time() - start_chk < 3.0:
-                    if should_stop(): return
-                    fin_x, fin_y = self._find_template_on_screen(
-                        dnconsole_path, tab_index, target_img,
-                        threshold=0.80, region=(1060, 0, 1280, 40)
-                    )
-                    if fin_x is not None and fin_y is not None:
-                        self.after(0, self.log_info, f"🎯 Phát hiện '{target_img}' tại ({fin_x}, {fin_y})! Hoàn thành dứt điểm mốc '{mode_name}'.")
-                        found_finish = True
-                        if "Chặng 2" in mode_name:
-                            self.send_telegram_alert(
-                                "🏯 [NHỊ KIỀU]\n🎯 Hoàn Thành Nhị Kiều !",
-                                capture_screenshot=True,
-                                tab_index=str(tab_index),
-                                is_card_d=True,
-                                delay_seconds=3.0
-                            )
-                        elif "d_dinh" in target_img:
-                            self.send_telegram_alert(
-                                "🏯 [NHỊ KIỀU]\n🎯 Đã Lên Đỉnh Tháp ( Vào Đánh Đi ) !",
-                                capture_screenshot=True,
-                                tab_index=str(tab_index),
-                                is_card_d=True,
-                                delay_seconds=3.0
-                            )
-                        break
-                    if self._sleep_card_D(0.5): return
+            found_dinh = False
+            found_thap14 = False
 
-            if found_finish:
+            start_chk = time.time()
+            chk_duration = 3.0
+
+            while time.time() - start_chk < chk_duration:
+                if should_stop(): return
+
+                # 1. ƯU TIÊN 1: Quét kiểm tra Đỉnh Tháp 10 (card_d/nhikieu/d_dinh.png, ngưỡng 80%, ROI 1060, 0, 1280, 40)
+                dinh_x, dinh_y = self._find_template_on_screen(
+                    dnconsole_path, tab_index, "card_d/nhikieu/d_dinh.png",
+                    threshold=0.80, region=(1060, 0, 1280, 40)
+                )
+                if dinh_x is not None and dinh_y is not None:
+                    self.after(0, self.log_info, f"🎯 [{mode_name} - Lượt {loop_idx}] Phát hiện 'card_d/nhikieu/d_dinh.png' tại ({dinh_x}, {dinh_y})! Đã Lên Đỉnh Tháp!")
+                    found_dinh = True
+                    self.send_telegram_alert(
+                        "🏯 [NHỊ KIỀU]\n🎯 Đã Lên Đỉnh Tháp ( Vào Đánh Đi ) !",
+                        capture_screenshot=True,
+                        tab_index=str(tab_index),
+                        is_card_d=True,
+                        delay_seconds=3.0
+                    )
+                    break
+
+                # 2. ƯU TIÊN 2: Quét kiểm tra Tháp 14 (card_d/nhikieu/d_thap14.png, ngưỡng 88%, ROI 1060, 0, 1280, 40)
+                t14_x, t14_y = self._find_template_on_screen(
+                    dnconsole_path, tab_index, "card_d/nhikieu/d_thap14.png",
+                    threshold=0.88, region=(1060, 0, 1280, 40)
+                )
+                if t14_x is not None and t14_y is not None:
+                    self.after(0, self.log_info, f"🎯 [{mode_name} - Lượt {loop_idx}] Phát hiện 'card_d/nhikieu/d_thap14.png' tại ({t14_x}, {t14_y}) (>= 88%) ➔ Đã lên tới Tháp 14!")
+                    self.send_telegram_alert(
+                        "🏯 [NHỊ KIỀU]\n🎯 Hoàn Thành Nhị Kiều !",
+                        capture_screenshot=True,
+                        tab_index=str(tab_index),
+                        is_card_d=True,
+                        delay_seconds=3.0
+                    )
+                    self.after(0, self.log_info, f"✅ [Card D - Nhị Kiều] Đã hoàn thành lên tới Tháp 14 (như hoàn thành đủ 3 lượt) thành công!")
+                    found_thap14 = True
+                    break
+
+                if self._sleep_card_D(0.4): return
+
+            if found_dinh:
                 self.after(0, self.log_info, f"✅ [Card D - Nhị Kiều] Đã hoàn thành mốc '{mode_name}' thành công!")
                 break
 
+            if found_thap14:
+                return "THAP_14"
+
+            # 3. Fallback khi đủ số lượt tối đa (3 lượt ở Chặng 2)
             if max_loops > 0 and loop_idx >= max_loops:
                 self.after(0, self.log_info, f"✅ [Card D - Nhị Kiều] Đã hoàn thành đủ {max_loops} lượt lặp cho mốc '{mode_name}' thành công!")
-                if "Chặng 2" in mode_name and not found_finish:
+                if "Chặng 2" in mode_name:
                     self.send_telegram_alert(
                         "🏯 [NHỊ KIỀU]\n🎯 Hoàn Thành Nhị Kiều !",
                         capture_screenshot=True,
@@ -7219,11 +7517,15 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
 
             # ---------------- CHẶNG 1: TRỆT / ĐẠI ĐIỆN / THÁP ➔ ĐỈNH THÁP 10 ----------------
             self.after(0, self.log_info, f"🏰 [{tag_log} - Chặng 1] Bắt đầu Chặng 1: {start_desc} ➔ Đỉnh Tháp 10...")
-            self._run_nhi_kieu_leo_thap_core(
+            res_c1 = self._run_nhi_kieu_leo_thap_core(
                 dnconsole_path, tab_index, loop_count=0, mode_name="Auto - Chặng 1",
                 run_stage_1=run_g1, run_stage_2=run_g2, target_finish_img="card_d/nhikieu/d_dinh.png"
             )
             if self._should_stop_card_D(): return
+            if res_c1 == "THAP_14":
+                self.after(0, self.log_info, "🎉 [Nhị Kiều] Đã phát hiện Tháp 14 ➔ Hoàn thành toàn bộ quy trình Nhị Kiều!")
+                self.after(0, lambda: self._send_notification("🎉 Hoàn Thành Nhị Kiều", "Đã hoàn thành toàn bộ leo tháp Nhị Kiều đến Tháp 14 thành công!"))
+                return
 
             self.after(0, self.log_info, f"⏳ [{tag_log}] Đã lên Đỉnh Tháp 10 ➔ Hoãn 5.0s trước khi thao tác Quân Sư...")
             if self._sleep_card_D(5.0): return
@@ -7336,7 +7638,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         self.after(0, self.log_info, f"🚀 [{tag_log} - Chặng 2] Bắt đầu Chặng 2: Tháp 11 ➔ Tháp 14 (Lặp lại đúng 3 lần, Vòng lặp GĐ 4-7 với Chuỗi Buff)...")
         self._run_nhi_kieu_leo_thap_core(
             dnconsole_path, tab_index, loop_count=3, mode_name="Auto - Chặng 2",
-            run_stage_1=False, run_stage_2=False, target_finish_img="card_d/nhikieu/d_dinh.png"
+            run_stage_1=False, run_stage_2=False, target_finish_img="card_d/nhikieu/d_thap14.png"
         )
         if self._should_stop_card_D(): return
 
@@ -8052,7 +8354,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                             target_region = (155, 95, 305, 625)
                         elif any(k in tmpl_lower for k in ["a_boss", "a_hetluot"]):
                             target_region = (275, 540, 1280, 720)
-                        elif any(k in tmpl_lower for k in ["a_dung", "c_digioi", "d_tret", "d_daidien", "d_thongdao", "d_dinh", "d_tang", "e_dinh", "pbmap", "pb20map", "pb50map", "pb80map", "pb110map", "pb140map", "d_loidai", "d_thap", "d_thap14"]):
+                        elif any(k in tmpl_lower for k in ["a_dung", "c_digioi", "d_tret", "d_daidien", "d_thongdao", "d_dinh", "d_tang", "e_dinh", "pbmap", "pb20map", "pb50map", "pb80map", "pb110map", "pb140map", "d_loidai", "d_thap", "d_thap14", "d_quangtruong"]):
                             target_region = (1060, 0, 1280, 40)
                         elif any(k in tmpl_lower for k in ["a_veboss", "a_khoa"]):
                             target_region = (730, 165, 1105, 610)
