@@ -1106,7 +1106,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
 
         # Cấu hình Kỹ Năng Phòng Thủ (Gộp Kết Giới / Linh Kính / Băng Tường)
         skill_opts = ["Kết Giới", "Linh Kính", "Băng Tường"]
-        target_opts = ["Chart", "Chart / Pet", "Team"]
+        target_opts = ["Chart", "Chart / Pet", "Team", "Pet - Team"]
 
         if hasattr(self, 'var_phong_thu'):
             self.var_phong_thu.set(False)
@@ -2365,16 +2365,24 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         }
         return self._handle_combat_defense_cycle(dnconsole_path, tab_name, tab_index, turn, skill_cfg, target_map, "CHART / PET")
 
-    def _handle_combat_defense_team(self, dnconsole_path: str, tab_name: str, tab_index: str, target_idx: int, skill_cfg: dict) -> int:
+    def _handle_combat_defense_team_generic(
+        self,
+        dnconsole_path: str,
+        tab_name: str,
+        tab_index: str,
+        target_idx: int,
+        skill_cfg: dict,
+        target_list: list,
+        mode_tag: str = "TEAM"
+    ) -> int:
         """
-        Xử lý Chế Độ 3: Mốc Team (Dùng chung cho Kết Giới / Linh Kính / Băng Tường)
-        - Danh sách thứ tự mục tiêu (Mục tiêu 3 đầu tiên khi vào trận, sau đó lần lượt 1 - 2 - 4 - 5):
-            Index 0: Mục tiêu 3 -> (905, 515) (Ưu tiên đầu trận)
-            Index 1: Mục tiêu 1 -> (1065, 435)
-            Index 2: Mục tiêu 2 -> (985, 475)
-            Index 3: Mục tiêu 4 -> (825, 555)
-            Index 4: Mục tiêu 5 -> (745, 595)
-        - Tự động reset target_idx = 0 khi hết trận (phát hiện f_vaotran.png).
+        Hàm xử lý DÙNG CHUNG cho các chế độ xoay tua theo danh sách mục tiêu (Team nhân vật hoặc Pet - Team):
+        - Quét f_vaotran.png để tự động reset về mục tiêu đầu trận (target_list[0]) khi hết trận / ngoài map.
+        - Quét f_dung.png kiểm tra đến lượt ra chiêu.
+        - Quét phụ f_tieptheo.png.
+        - Kiểm tra ưu tiên Hồi Sinh (min_dead=3, reverse_priority=True).
+        - Ra chiêu Bước 2: tìm skill -> tap mục tiêu -> tap 2 lần nút Auto.
+        - Tự động luân chuyển sang mục tiêu kế tiếp theo vòng tròn.
         """
         var_skill = getattr(self, skill_cfg["var_name"])
         check_active = var_skill.get
@@ -2382,42 +2390,36 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             return target_idx
 
         skill_tag = skill_cfg["name"]
-
-        target_list = [
-            {"num": 3, "name": "Mục tiêu 3 (Đầu trận)", "coord": (905, 515)},
-            {"num": 1, "name": "Mục tiêu 1", "coord": (1065, 435)},
-            {"num": 2, "name": "Mục tiêu 2", "coord": (985, 475)},
-            {"num": 4, "name": "Mục tiêu 4", "coord": (825, 555)},
-            {"num": 5, "name": "Mục tiêu 5", "coord": (745, 595)},
-        ]
         curr_idx = target_idx % len(target_list)
         target_info = target_list[curr_idx]
         tx, ty = target_info["coord"]
         target_label = target_info["name"]
 
         # BƯỚC 1: Quét nhận diện bắt đầu lượt đánh (Đã hoàn thành hoãn 5s trước đó -> Kích hoạt quét f_vaotran & f_dung)
-        self.after(0, self.log_info, f"⚔️ [{skill_tag} - TEAM] [{target_label} ({tx}, {ty})] Chờ lượt đánh 'f_dung' hoặc hết trận 'f_vaotran'...")
+        self.after(0, self.log_info, f"⚔️ [{skill_tag} - {mode_tag}] [{target_label} ({tx}, {ty})] Chờ lượt đánh 'f_dung' hoặc hết trận 'f_vaotran'...")
 
         found_turn = False
         while not self.stop_requested and not (hasattr(self, '_stop_event') and self._stop_event.is_set()) and check_active():
             # 1. Quét f_vaotran.png (ROI 1215, 0, 1280, 45, 80%) kiểm tra hết trận / ngoài trận
             vt_x, vt_y = self._find_template_on_screen(dnconsole_path, tab_index, "card_f/f_vaotran.png", threshold=0.80, region=(1215, 0, 1280, 45))
             if vt_x is not None and vt_y is not None:
-                self.after(0, self.log_info, f"🎯 [{skill_tag} - TEAM] Phát hiện 'card_f/f_vaotran.png' tại ({vt_x}, {vt_y}) ➔ Trận đấu đã kết thúc / Đang ngoài trận!")
-                self.after(0, self.log_info, f"🔄 [{skill_tag} - TEAM] Tự động reset chu kỳ buff về Mục tiêu 3 (905, 515). Chờ vào trận đấu mới...")
+                reset_target = target_list[0]
+                reset_coord = reset_target["coord"]
+                self.after(0, self.log_info, f"🎯 [{skill_tag} - {mode_tag}] Phát hiện 'card_f/f_vaotran.png' tại ({vt_x}, {vt_y}) ➔ Trận đấu đã kết thúc / Đang ngoài trận!")
+                self.after(0, self.log_info, f"🔄 [{skill_tag} - {mode_tag}] Tự động reset chu kỳ buff về {reset_target['name']} ({reset_coord[0]}, {reset_coord[1]}). Chờ vào trận đấu mới...")
                 while not self.stop_requested and not (hasattr(self, '_stop_event') and self._stop_event.is_set()) and check_active():
                     if self._sleep_with_stop_check(0.5, check_active=check_active):
                         return 0
                     # Kiểm tra nếu f_dung.png xuất hiện đột ngột (đã vào trận và đến lượt)
                     d_chk_x, d_chk_y = self._find_template_on_screen(dnconsole_path, tab_index, "card_f/f_dung.png", threshold=0.80, region=(640, 0, 1280, 145))
                     if d_chk_x is not None and d_chk_y is not None:
-                        self.after(0, self.log_info, f"🎯 [{skill_tag} - TEAM] Phát hiện 'card_f/f_dung.png' ➔ Đã chính thức vào trận đấu mới!")
+                        self.after(0, self.log_info, f"🎯 [{skill_tag} - {mode_tag}] Phát hiện 'card_f/f_dung.png' ➔ Đã chính thức vào trận đấu mới!")
                         found_turn = True
                         break
                     # Kiểm tra f_vaotran.png đã biến mất chưa
                     vt_chk_x, vt_chk_y = self._find_template_on_screen(dnconsole_path, tab_index, "card_f/f_vaotran.png", threshold=0.80, region=(1215, 0, 1280, 45))
                     if vt_chk_x is None or vt_chk_y is None:
-                        self.after(0, self.log_info, f"🎯 [{skill_tag} - TEAM] 'card_f/f_vaotran.png' đã biến mất ➔ Đã vào trận đấu mới! Bắt đầu chu kỳ từ Mục tiêu 3 (905, 515)...")
+                        self.after(0, self.log_info, f"🎯 [{skill_tag} - {mode_tag}] 'card_f/f_vaotran.png' đã biến mất ➔ Đã vào trận đấu mới! Bắt đầu chu kỳ từ {reset_target['name']} ({reset_coord[0]}, {reset_coord[1]})...")
                         break
 
                 if found_turn:
@@ -2430,7 +2432,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             # 2. Quét f_dung.png (ROI 640, 0, 1280, 145, 80%) kiểm tra đến lượt ra chiêu
             d_x, d_y = self._find_template_on_screen(dnconsole_path, tab_index, "card_f/f_dung.png", threshold=0.80, region=(640, 0, 1280, 145))
             if d_x is not None and d_y is not None:
-                self.after(0, self.log_info, f"🎯 [{skill_tag} - TEAM] Đã phát hiện 'card_f/f_dung.png' tại ({d_x}, {d_y}) (CHỈ QUÉT, KHÔNG TAP) ➔ Đã đến lượt ra chiêu! NGỪNG QUÉT f_vaotran!")
+                self.after(0, self.log_info, f"🎯 [{skill_tag} - {mode_tag}] Đã phát hiện 'card_f/f_dung.png' tại ({d_x}, {d_y}) (CHỈ QUÉT, KHÔNG TAP) ➔ Đã đến lượt ra chiêu! NGỪNG QUÉT f_vaotran!")
                 found_turn = True
                 break
 
@@ -2443,7 +2445,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         # Quét phụ nút Tiếp Theo (f_tieptheo.png) trong tối đa 0.5s (nghỉ 0.25s/lần)
         self._check_and_tap_f_tieptheo(
             dnconsole_path, tab_index,
-            log_tag=f"{skill_tag} - TEAM",
+            log_tag=f"{skill_tag} - {mode_tag}",
             stop_check=lambda: not check_active() or self.stop_requested or (hasattr(self, '_stop_event') and self._stop_event.is_set())
         )
 
@@ -2452,7 +2454,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
 
         # KIỂM TRA THAO TÁC ƯU TIÊN (HỒI SINH >= 3 NGƯỜI CHẾT, ƯU TIÊN ĐẢO NGƯỢC)
         if self._check_defense_priority_hs(dnconsole_path, tab_name, tab_index, skill_cfg,
-                                           mode_tag="TEAM", min_dead=3, reverse_priority=True,
+                                           mode_tag=mode_tag, min_dead=3, reverse_priority=True,
                                            turn_label=target_label):
             return curr_idx
 
@@ -2460,7 +2462,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             return curr_idx
 
         # BƯỚC 2: Nhận diện Skill & Ra Chiêu
-        step_tag = f"TEAM] [{target_label}"
+        step_tag = f"{mode_tag}] [{target_label}"
         cast_success = self._cast_defense_skill_to_target(
             dnconsole_path, tab_index, skill_cfg,
             target_x=tx, target_y=ty, target_label=target_label,
@@ -2471,8 +2473,52 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
 
         next_idx = (curr_idx + 1) % len(target_list)
         next_target_info = target_list[next_idx]
-        self.after(0, self.log_info, f"✅ [{skill_tag} - TEAM] Đã buff xong {target_label}! Mục tiêu tiếp theo: {next_target_info['name']} ({next_target_info['coord'][0]}, {next_target_info['coord'][1]})...")
+        self.after(0, self.log_info, f"✅ [{skill_tag} - {mode_tag}] Đã buff xong {target_label}! Mục tiêu tiếp theo: {next_target_info['name']} ({next_target_info['coord'][0]}, {next_target_info['coord'][1]})...")
         return next_idx
+
+    def _handle_combat_defense_team(self, dnconsole_path: str, tab_name: str, tab_index: str, target_idx: int, skill_cfg: dict) -> int:
+        """
+        Xử lý Chế Độ 3: Mốc Team (Nhân vật) (Dùng chung cho Kết Giới / Linh Kính / Băng Tường)
+        - Danh sách thứ tự mục tiêu (Mục tiêu 3 đầu tiên khi vào trận, sau đó lần lượt 1 - 2 - 4 - 5):
+            Index 0: Mục tiêu 3 -> (905, 515) (Ưu tiên đầu trận)
+            Index 1: Mục tiêu 1 -> (1065, 435)
+            Index 2: Mục tiêu 2 -> (985, 475)
+            Index 3: Mục tiêu 4 -> (825, 555)
+            Index 4: Mục tiêu 5 -> (745, 595)
+        - Tự động reset target_idx = 0 khi hết trận (phát hiện f_vaotran.png).
+        """
+        target_list = [
+            {"num": 3, "name": "Mục tiêu 3 (Đầu trận)", "coord": (905, 515)},
+            {"num": 1, "name": "Mục tiêu 1", "coord": (1065, 435)},
+            {"num": 2, "name": "Mục tiêu 2", "coord": (985, 475)},
+            {"num": 4, "name": "Mục tiêu 4", "coord": (825, 555)},
+            {"num": 5, "name": "Mục tiêu 5", "coord": (745, 595)},
+        ]
+        return self._handle_combat_defense_team_generic(
+            dnconsole_path, tab_name, tab_index, target_idx, skill_cfg, target_list, mode_tag="TEAM"
+        )
+
+    def _handle_combat_defense_pet_team(self, dnconsole_path: str, tab_name: str, tab_index: str, target_idx: int, skill_cfg: dict) -> int:
+        """
+        Xử lý Chế Độ 4: Mốc Pet - Team (Dùng chung cho Kết Giới / Linh Kính / Băng Tường)
+        - Danh sách thứ tự mục tiêu Pet (Mục tiêu 3 đầu tiên khi vào trận, sau đó lần lượt 1 - 2 - 4 - 5):
+            Index 0: Mục tiêu 3 -> (825, 475) (Ưu tiên đầu trận)
+            Index 1: Mục tiêu 1 -> (985, 390)
+            Index 2: Mục tiêu 2 -> (905, 435)
+            Index 3: Mục tiêu 4 -> (745, 515)
+            Index 4: Mục tiêu 5 -> (665, 555)
+        - Tự động reset target_idx = 0 khi hết trận (phát hiện f_vaotran.png).
+        """
+        target_list = [
+            {"num": 3, "name": "Mục tiêu 3 (Đầu trận)", "coord": (825, 475)},
+            {"num": 1, "name": "Mục tiêu 1", "coord": (985, 390)},
+            {"num": 2, "name": "Mục tiêu 2", "coord": (905, 435)},
+            {"num": 4, "name": "Mục tiêu 4", "coord": (745, 515)},
+            {"num": 5, "name": "Mục tiêu 5", "coord": (665, 555)},
+        ]
+        return self._handle_combat_defense_team_generic(
+            dnconsole_path, tab_name, tab_index, target_idx, skill_cfg, target_list, mode_tag="PET - TEAM"
+        )
 
     def _run_phong_thu_standalone(self, dnconsole_path: str, tab_name: str, tab_index: str, run_token: int = None):
         """Worker thread thực thi Kỹ Năng Phòng Thủ (Kết Giới / Linh Kính / Băng Tường)"""
@@ -2502,6 +2548,8 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                     turn_mode = self._handle_combat_defense_chart_pet(dnconsole_path, tab_name, tab_index, turn_mode, skill_cfg)
                 elif choice == "Team":
                     team_target_idx = self._handle_combat_defense_team(dnconsole_path, tab_name, tab_index, team_target_idx, skill_cfg)
+                elif choice == "Pet - Team":
+                    team_target_idx = self._handle_combat_defense_pet_team(dnconsole_path, tab_name, tab_index, team_target_idx, skill_cfg)
                 else:
                     self._sleep_with_stop_check(0.5, check_active=self.var_phong_thu.get, run_token=run_token)
 
@@ -3578,7 +3626,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         )
         lbl_sub_defense.pack(side="left", padx=(8, 0))
 
-        target_options = ["Chart", "Chart / Pet", "Team"]
+        target_options = ["Chart", "Chart / Pet", "Team", "Pet - Team"]
         self.combo_phong_thu_target = ctk.CTkOptionMenu(
             row_combat2,
             values=target_options,

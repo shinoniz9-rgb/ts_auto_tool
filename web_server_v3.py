@@ -2347,6 +2347,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         <option value="Chart">Chart</option>
                         <option value="Chart / Pet">Chart / Pet</option>
                         <option value="Team">Team</option>
+                        <option value="Pet - Team">Pet - Team</option>
                     </select>
                 </div>
             </div>
