@@ -58,9 +58,36 @@ if exist "%OLD_SHORTCUT%" (
     if exist "%TEMP%\_create_sc2.vbs" del "%TEMP%\_create_sc2.vbs"
 )
 
+REM Tao hoac cap nhat them shortcut mo truc tiep Tool .exe (ho tro mo lan 1 Tab 1, lan 2 Tab 2...)
+set "EXE_TARGET="
+if exist "%CURRENT_DIR%\TS_Origin_Control_V3.exe" (
+    set "EXE_TARGET=%CURRENT_DIR%\TS_Origin_Control_V3.exe"
+    set "EXE_DIR=%CURRENT_DIR%"
+) else if exist "%CURRENT_DIR%\dist\TS_Origin_Control_V3.exe" (
+    set "EXE_TARGET=%CURRENT_DIR%\dist\TS_Origin_Control_V3.exe"
+    set "EXE_DIR=%CURRENT_DIR%\dist"
+)
+if defined EXE_TARGET (
+    set "TOOL_SHORTCUT=%DESKTOP_DIR%\TS Origin Control V3.lnk"
+    (
+    echo Set oWS = CreateObject("WScript.Shell"^)
+    echo Set oLink = oWS.CreateShortcut("%TOOL_SHORTCUT%"^)
+    echo oLink.TargetPath = "%EXE_TARGET%"
+    echo oLink.WorkingDirectory = "%EXE_DIR%"
+    echo oLink.IconLocation = "%EXE_TARGET%,0"
+    echo oLink.Description = "TS Origin Control V3 (Multi-Tab Slot 1..10)"
+    echo oLink.Save
+    ) > "%TEMP%\_create_sc3.vbs"
+    cscript //nologo "%TEMP%\_create_sc3.vbs"
+    if exist "%TEMP%\_create_sc3.vbs" del "%TEMP%\_create_sc3.vbs"
+)
+
 echo [OK] Thu muc hien tai: %CURRENT_DIR%
 echo [OK] Da tao / cap nhat thanh cong bieu tuong tai Desktop:
-echo      %SHORTCUT_PATH%
+echo      1. %SHORTCUT_PATH% (Giao dien Web Hub 8080)
+if defined EXE_TARGET (
+echo      2. %TOOL_SHORTCUT% (Cua so Tool Da Tab - Mo lan 1: Tab 1, Mo lan 2: Tab 2...)
+)
 echo.
 echo ============================================================
 echo   HOAN TAT! TU NAY BAN CO THE MO APP V3 TRUC TIEP TU DESKTOP!

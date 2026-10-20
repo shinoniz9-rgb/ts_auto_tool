@@ -1,7 +1,6 @@
 # Quy Tắc & Hướng Dẫn Dự Án (Project Rules)
-
 ## 1. Đồng bộ với Giao Diện Web (`web_server_v3.py`)
-- **Bắt buộc kiểm tra**: Mỗi khi có thay đổi ảnh hưởng đến tính năng, cấu hình, giao diện, nút bấm, ô chọn (combobox/option menu), ô tích (checkbox/switch) hay API điều khiển, **PHẢI luôn đồng bộ tương ứng sang `web_server_v3.py`** (cổng mặc định `8082`).
+- **Bắt buộc kiểm tra**: Mỗi khi có thay đổi ảnh hưởng đến tính năng, cấu hình, giao diện, nút bấm, ô chọn (combobox/option menu), ô tích (checkbox/switch) hay API điều khiển, **PHẢI luôn đồng bộ tương ứng sang `web_server_v3.py`** (cổng mặc định `8081` cho Tab 1, các Tab tiếp theo `8082`, `8083`... và Trang Tổng Quản Hub Gateway `8080`).
 - **Thông báo rõ ràng**: Đối với các thay đổi thuần logic xử lý ngầm (như thời gian hoãn sleep, tọa độ click nội bộ, thuật toán...) không tác động đến giao diện/API Web, không cần sửa `web_server_v3.py`, nhưng **bắt buộc phải thông báo rõ cho người dùng**: *"Những thay đổi này thuộc logic nội bộ, không ảnh hưởng đến giao diện Web."*
 
 ## 2. Đồng bộ Thư mục Đóng Gói (`dist/`)

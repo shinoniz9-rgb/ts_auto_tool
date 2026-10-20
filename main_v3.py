@@ -1,6 +1,7 @@
 import customtkinter as ctk
 import subprocess
 import os
+import shutil
 import threading
 import time
 import json
@@ -90,11 +91,18 @@ class ToolLDPlayerGUI(ctk.CTk):
         {"key": "HT_5", "name": "HT_5 (Pet 5)",  "x": 944, "y": 289, "hp_x": 944, "hp_y": 289, "sp_x": 944, "sp_y": 296, "w": 65, "h_hp": 6, "h_sp": 4},
     )
 
-    def __init__(self):
+    def __init__(self, slot_index: int = 1, web_port: int = 8081, assigned_tab_index: str = "0", slot_mutex=None):
         super().__init__()
 
+        # --- QUẢN LÝ SLOT & CỔNG ĐA TAB (HUB & WORKER ARCHITECTURE) ---
+        self.slot_index = slot_index
+        self.web_port = web_port
+        self.assigned_tab_index = str(assigned_tab_index)
+        self.slot_mutex = slot_mutex
+        self.is_hub_master = False
+
         # --- CẤU HÌNH CỬA SỔ CHÍNH (CỐ ĐỊNH TOOL TỔNG) ---
-        self.title(f"TS Origin-Control v{APP_VERSION}")
+        self.title(f"Tab {self.assigned_tab_index} - TS Origin")
         self.geometry("610x665")
         self.resizable(False, False)
         self.configure(fg_color=COLOR_BG_MAIN)
@@ -113,7 +121,6 @@ class ToolLDPlayerGUI(ctk.CTk):
 
         # Biến trạng thái Web Server & Cloudflare Tunnel (Truy cập từ xa)
         self.web_ip = "127.0.0.1"
-        self.web_port = 8082
         self.cloudflared_proc = None
         self.public_web_url = ""
         self.current_web_url = ""
@@ -222,8 +229,9 @@ class ToolLDPlayerGUI(ctk.CTk):
         # Khởi tạo bộ nhớ log thời gian thực & Kích hoạt Web Server điều khiển từ xa
         self.recent_logs = []
         self.update_info = None
-        self.after(600, lambda: web_server.start_web_server(self, port=8082))
-        self.after(1000, lambda: self.log_info(f"✨ TS Origin Control V3 (v{APP_VERSION}) - Đã sẵn sàng hoạt động!"))
+        self.after(600, lambda: web_server.start_web_server(self, port=self.web_port))
+        self.after(800, self._schedule_hub_gateway_check)
+        self.after(1000, lambda: self.log_info(f"✨ TS Origin Control V3 (v{APP_VERSION}) - Slot {self.slot_index} (Tab Index: {self.assigned_tab_index}, Port: {self.web_port}) - Đã sẵn sàng!"))
         self.after(2500, lambda: updater.start_background_updater(self))
 
         # Dọn sạch ADB session bẩn từ lần chạy trước (chống xung đột ADB khi dev/debug)
@@ -315,47 +323,129 @@ class ToolLDPlayerGUI(ctk.CTk):
                 pass
         self.after(0, self._destroy_app_completely)
 
+    def _schedule_hub_gateway_check(self):
+        """Định kỳ kiểm tra và tự động kế thừa quyền Master Hub 8080 nếu cửa sổ Master cũ đã đóng"""
+        if not getattr(self, 'is_hub_master', False):
+            try:
+                res = web_server.check_and_start_hub_gateway(self, silent=True)
+                if res:
+                    self.is_hub_master = True
+                    self.log_info(f"👑 [HUB GATEWAY] Tab này (Cổng {self.web_port}) đã tự động tiếp quản vai trò Master Hub tại Cổng 8080.")
+            except Exception:
+                pass
+        self.after(5000, self._schedule_hub_gateway_check)
+
+    def _get_adb_path(self) -> str:
+        """Tìm đường dẫn adb.exe chính xác, ưu tiên ld_path đã cấu hình, sau đó dò tìm các thư mục cài đặt LDPlayer phổ biến"""
+        base_ld = getattr(self, 'ld_path', '')
+        if base_ld:
+            cand = os.path.join(base_ld, "adb.exe")
+            if os.path.exists(cand):
+                return cand
+        for candidate_dir in [
+            r"C:\LDPlayer\LDPlayer9",
+            r"C:\LDPlayer",
+            r"C:\leidian\LDPlayer9",
+            r"C:\Program Files\LDPlayer9",
+            r"C:\Program Files\LDPlayer\LDPlayer9"
+        ]:
+            cand = os.path.join(candidate_dir, "adb.exe")
+            if os.path.exists(cand):
+                return cand
+        which_adb = shutil.which("adb")
+        return which_adb if which_adb else "adb.exe"
+
     def _cleanup_adb_sessions(self):
-        """Dọn sạch ADB session bẩn từ lần chạy trước: Kill rồi Start lại ADB server để đảm bảo session sạch.
-        Chạy nền khi khởi động tool — ngăn chặn tình trạng xung đột ADB gây nhảy thao tác / mất kết nối giả lập."""
+        """Khởi tạo và làm sạch ADB session chuẩn xác:
+        1. Nếu là Cửa Sổ Đầu Tiên (Cold Start) hoặc ADB Server bị treo cứng:
+           -> Dọn sạch toàn bộ tiến trình ADB cũ (kill-server) để không hư giả lập,
+              khởi động ADB server mới từ ld_path và connect sẵn sàng.
+        2. Nếu đã có Tab khác đang chạy và ADB server đang khỏe mạnh:
+           -> Tuyệt đối KHÔNG kill server (để không phá hỏng Auto của tab khác),
+              chỉ thực hiện kết nối riêng cho Tab của mình (connect 127.0.0.1:<port> & reconnect offline).
+        """
         try:
-            adb_path = os.path.join(self.ld_path, "adb.exe")
+            adb_path = self._get_adb_path()
             if not os.path.exists(adb_path):
                 return
             creation_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-            # Kill ADB server cũ (xóa mọi session bẩn từ lần chạy trước)
-            subprocess.run(
-                [adb_path, "kill-server"],
-                timeout=5,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=creation_flags
-            )
-            time.sleep(0.5)
-            # Start lại ADB server mới (session sạch hoàn toàn)
-            subprocess.run(
-                [adb_path, "start-server"],
-                timeout=8,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=creation_flags
-            )
-            self.after(0, self.log_info, "🔌 [ADB] Đã reset ADB session — sẵn sàng kết nối giả lập.")
+            current_slot = 1
+            try:
+                current_slot = int(getattr(self, 'slot_index', 1))
+            except Exception:
+                current_slot = 1
+            other_running = _has_other_running_slots(current_slot)
+
+            need_hard_kill = False
+            if not other_running:
+                # Cửa sổ đầu tiên mở tool -> Bắt buộc kill sạch để không hư giả lập
+                need_hard_kill = True
+            else:
+                # Đã có tab khác đang chạy -> Kiểm tra xem ADB server hiện tại có bị treo cứng không
+                try:
+                    p_test = subprocess.run([adb_path, "devices"], timeout=2.5, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=creation_flags)
+                    if p_test.returncode != 0:
+                        need_hard_kill = True
+                except subprocess.TimeoutExpired:
+                    # ADB server bị treo cứng trên Windows -> Buộc phải giải cứu bằng hard kill
+                    need_hard_kill = True
+                except Exception:
+                    pass
+
+            if need_hard_kill:
+                # 1. Kill sạch mọi tiến trình adb cũ
+                try:
+                    subprocess.run(["taskkill", "/F", "/IM", "adb.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creation_flags)
+                    time.sleep(0.3)
+                except Exception:
+                    pass
+                try:
+                    subprocess.run([adb_path, "kill-server"], timeout=4, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creation_flags)
+                    time.sleep(0.3)
+                except Exception:
+                    pass
+                # 2. Khởi động lại ADB server sạch sẽ
+                subprocess.run([adb_path, "start-server"], timeout=8, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creation_flags)
+                time.sleep(0.5)
+                self.after(0, self.log_info, "🔌 [ADB] Đã khởi tạo mới ADB Server chính chủ — giả lập sạch hoàn toàn.")
+            else:
+                self.after(0, self.log_info, "🔌 [ADB] Kế thừa ADB Server đang hoạt động tốt từ Tab trước (không ngắt quãng Auto).")
+
+            # 3. Kết nối chủ động vào cổng của Tab này (tránh tình trạng emulator bị offline / device not found)
+            tab_idx_val = 0
+            try:
+                assigned = getattr(self, 'assigned_tab_index', '0')
+                tab_idx_val = int(assigned) if str(assigned).isdigit() else 0
+            except Exception:
+                tab_idx_val = 0
+            
+            target_port = 5555 + (tab_idx_val * 2)
+            try:
+                subprocess.run([adb_path, "connect", f"127.0.0.1:{target_port}"], timeout=3, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creation_flags)
+                subprocess.run([adb_path, "reconnect", "offline"], timeout=3, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creation_flags)
+            except Exception:
+                pass
         except Exception:
             pass
 
     def _destroy_app_completely(self):
-        # Kill ADB server trước khi thoát để không để lại session bẩn cho lần chạy tiếp theo
+        # Chỉ kill ADB server khi không còn cửa sổ slot nào khác đang chạy
         try:
-            adb_path = os.path.join(self.ld_path, "adb.exe")
-            if os.path.exists(adb_path):
-                subprocess.run(
-                    [adb_path, "kill-server"],
-                    timeout=4,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-                )
+            current_slot = 1
+            try:
+                current_slot = int(getattr(self, 'slot_index', 1))
+            except Exception:
+                current_slot = 1
+            if not _has_other_running_slots(current_slot):
+                adb_path = self._get_adb_path()
+                if os.path.exists(adb_path):
+                    subprocess.run(
+                        [adb_path, "kill-server"],
+                        timeout=4,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                    )
         except Exception:
             pass
         try:
@@ -713,7 +803,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         if enable_tg is not None and not enable_tg.get():
             return
 
-        cfg_p = os.path.join(get_app_dir(), "config.json")
+        cfg_p = self._get_config_path() if hasattr(self, '_get_config_path') else os.path.join(get_app_dir(), "config.json")
         if os.path.exists(cfg_p):
             try:
                 with open(cfg_p, "r", encoding="utf-8") as f:
@@ -1061,10 +1151,26 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         self._update_buff_state()
         self._update_phong_thu_state()
 
+    def _get_config_path(self) -> str:
+        """Lấy đường dẫn file config riêng cho Tab/Slot hiện tại (tách biệt cấu hình từng tab)"""
+        tab_idx = getattr(self, 'assigned_tab_index', None)
+        if tab_idx is not None:
+            cfg_name = f"config_tab{tab_idx}.json"
+            cfg_path = os.path.join(get_app_dir(), cfg_name)
+            if not os.path.exists(cfg_path):
+                base_cfg = os.path.join(get_app_dir(), "config.json")
+                if os.path.exists(base_cfg):
+                    try:
+                        shutil.copyfile(base_cfg, cfg_path)
+                    except Exception:
+                        pass
+            return cfg_path
+        return os.path.join(get_app_dir(), "config.json")
+
     def save_config(self, target_tab: str = None):
-        """Lưu cấu hình máy chủ & checkbox theo từng tab LDPlayer vào config.json"""
+        """Lưu cấu hình máy chủ & checkbox theo từng tab LDPlayer vào config riêng biệt"""
         try:
-            config_path = os.path.join(get_app_dir(), "config.json")
+            config_path = self._get_config_path()
             config = {}
             if os.path.exists(config_path):
                 try:
@@ -1105,8 +1211,8 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             pass
 
     def load_config(self, target_tab: str = None):
-        """Khôi phục cấu hình riêng của tab LDPlayer được chọn từ config.json"""
-        config_path = os.path.join(get_app_dir(), "config.json")
+        """Khôi phục cấu hình riêng của tab LDPlayer được chọn từ config riêng biệt"""
+        config_path = self._get_config_path()
         if os.path.exists(config_path):
             try:
                 with open(config_path, "r", encoding="utf-8") as f:
@@ -1353,6 +1459,22 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         self._screen_cache = {}
         self._active_adb_device = {}
 
+        # Kết nối ngầm tự động vào cổng ADB của tab vừa chọn để đảm bảo luôn ở trạng thái device (online)
+        tab_idx_str = self.dict_name_to_index.get(choice, "")
+        if not tab_idx_str and hasattr(self, '_resolve_tab_index_fallback'):
+            tab_idx_str = self._resolve_tab_index_fallback(choice)
+        if tab_idx_str and str(tab_idx_str).isdigit():
+            def _quick_connect_tab(idx_num):
+                adb_p = self._get_adb_path()
+                if adb_p and os.path.exists(adb_p):
+                    cflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                    t_port = 5555 + (int(idx_num) * 2)
+                    try:
+                        subprocess.run([adb_p, "connect", f"127.0.0.1:{t_port}"], timeout=2, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=cflags)
+                    except Exception:
+                        pass
+            threading.Thread(target=_quick_connect_tab, args=(int(tab_idx_str),), daemon=True).start()
+
         self.load_config(target_tab=choice)
         self.log_info(f"🔄 Đã nạp cấu hình riêng của tab LDPlayer: '{choice}'")
 
@@ -1368,11 +1490,11 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         self.frame_web_bar.grid_columnconfigure(0, weight=1)
         self.frame_web_bar.grid_columnconfigure(1, weight=0)
 
-        self.current_web_url = f"http://{getattr(self, 'web_ip', '127.0.0.1')}:{getattr(self, 'web_port', 8082)}"
+        self.current_web_url = f"http://{getattr(self, 'web_ip', '127.0.0.1')}:{getattr(self, 'web_port', 8081)}"
 
         self.lbl_web_url = ctk.CTkLabel(
             self.frame_web_bar,
-            text=f"🌐 Web: {self.current_web_url}",
+            text=f"🌐 Wifi: {self.current_web_url}",
             font=ctk.CTkFont(family=FONT_FAMILY, size=13, weight="bold"),
             text_color=COLOR_ACCENT,
             anchor="w"
@@ -1469,7 +1591,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         if hasattr(self, 'btn_online_tunnel'):
             self.btn_online_tunnel.configure(text="Retry Online", state="normal", fg_color="#EA580C")
         if hasattr(self, 'lbl_web_url'):
-            local_url = f"http://{getattr(self, 'web_ip', '127.0.0.1')}:{getattr(self, 'web_port', 8082)}"
+            local_url = f"http://{getattr(self, 'web_ip', '127.0.0.1')}:{getattr(self, 'web_port', 8081)}"
             self.lbl_web_url.configure(text=f"🌐 Wifi: {local_url}")
             self.current_web_url = local_url
         self.log_warning("⚠️ Đường truyền 4G đã dừng. Bấm 'Retry Online' nếu muốn kết nối lại.")
@@ -1532,22 +1654,15 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
     def _get_selected_ld_info(self):
         """Lấy tên tab và index tab LDPlayer đang chọn"""
         tab_name = self.combo_ld_tabs.get()
-        if tab_name in ["Đang quét tab...", "Không tìm thấy tab LD nào", "Sai đường dẫn LDPlayer", "Lỗi quét dữ liệu"]:
+        if not tab_name or tab_name in ["Đang quét tab...", "Không tìm thấy tab LD nào", "Sai đường dẫn LDPlayer", "Lỗi quét dữ liệu"]:
+            return None, None
+        if "Không có Tab LD" in tab_name or "Chưa có Tab LD" in tab_name or tab_name.startswith("Không tìm thấy"):
             return None, None
         dict_map = getattr(self, "dict_name_to_index", {})
         index_tab = dict_map.get(tab_name)
         if index_tab is None:
-            try:
-                vals = list(self.combo_ld_tabs.cget("values"))
-                if tab_name in vals:
-                    index_tab = str(vals.index(tab_name))
-            except Exception:
-                pass
-        if index_tab is None:
-            # Dò tìm con số trong tên tab (VD: "LDPlayer-1" -> "1")
-            nums = re.findall(r'\d+', tab_name)
-            index_tab = nums[0] if nums else "0"
-        return tab_name, index_tab
+            return None, None
+        return tab_name, str(index_tab)
 
     def _on_checkbox_toggled(self):
         """Callback khi bất kỳ ô checkbox nào được tích chọn/bỏ chọn"""
@@ -3704,7 +3819,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                 tab_idx = int(cmd_list[idx_pos])
                 raw_subcmd = str(cmd_list[cmd_pos]).strip()
 
-                adb_path = os.path.join(self.ld_path, "adb.exe")
+                adb_path = self._get_adb_path()
 
                 if os.path.exists(adb_path):
                     port_5555 = 5555 + (tab_idx * 2)
@@ -3821,22 +3936,65 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             self.dict_name_to_index = dict_map
 
         if tab_names:
-            current_selection = self.combo_ld_tabs.get()
             self.combo_ld_tabs.configure(values=tab_names)
 
-            saved_tab = getattr(self, 'saved_selected_tab', None)
-            if current_selection in tab_names and current_selection not in ["Đang quét tab...", "Lỗi quét dữ liệu", "Không tìm thấy tab LD nào"]:
-                target_sel = current_selection
-            elif saved_tab and saved_tab in tab_names:
-                target_sel = saved_tab
+            assigned_idx = getattr(self, 'assigned_tab_index', None)
+            target_sel = None
+            if assigned_idx is not None and dict_map:
+                for name, idx in dict_map.items():
+                    if str(idx) == str(assigned_idx) and name in tab_names:
+                        target_sel = name
+                        break
+
+            if target_sel:
+                self.combo_ld_tabs.configure(values=[target_sel])
+                self.combo_ld_tabs.set(target_sel)
+                self.combo_ld_tabs.configure(state="disabled")
+                self._on_ld_tab_selected(target_sel)
+
+                actual_idx = dict_map.get(target_sel, assigned_idx) if dict_map else assigned_idx
+                self.title(f"{target_sel} - TS Origin")
+
+                count = len(tab_names)
+                self.log_info(f"✅ Đã phát hiện {count} tab LDPlayer. Cửa sổ Slot {getattr(self, 'slot_index', 1)} được gán và khóa cố định: {target_sel} (Port {self.web_port})")
             else:
-                target_sel = tab_names[0]
+                # KHÔNG TÌM THẤY Tab giả lập tương ứng (ví dụ mở Tool 3 mà chỉ có 2 tab LDPlayer)
+                # TUYỆT ĐỐI KHÔNG FALLBACK VỀ tab_names[0] ĐỂ TRÁNH TRÙNG LẶP!
+                count = len(tab_names)
+                slot_num = getattr(self, 'slot_index', 1)
+                req_idx = assigned_idx if assigned_idx is not None else str(slot_num - 1)
+                warn_msg = f"Không có Tab LD thứ {slot_num} (Index {req_idx})"
 
-            self.combo_ld_tabs.set(target_sel)
-            self._on_ld_tab_selected(target_sel)
+                combo_vals = [warn_msg] + tab_names
+                self.combo_ld_tabs.configure(values=combo_vals)
+                self.combo_ld_tabs.set(warn_msg)
 
-            count = len(tab_names)
-            self.log_info(f"Đã phát hiện {count} tab LDPlayer: {', '.join(tab_names)}")
+                self.current_active_tab = None
+                self._screen_cache = {}
+                self._active_adb_device = {}
+                self.title(f"⚠️ {warn_msg} - TS Origin")
+
+                self.log_warning(f"⚠️ [CẢNH BÁO] Không tìm thấy Tab giả lập thứ {slot_num} (Index {req_idx})!")
+                self.log_warning(f"👉 Hiện tại máy chỉ có {count} tab LDPlayer: [{', '.join(tab_names)}].")
+                self.log_warning(f"👉 Tool sẽ tự động đóng cửa sổ Slot {slot_num} này để tránh chạy trùng lặp!")
+
+                def _alert_missing_tab_and_close():
+                    try:
+                        import ctypes
+                        ctypes.windll.user32.MessageBoxW(
+                            int(self.winfo_id()) if hasattr(self, 'winfo_id') else 0,
+                            f"Không tìm thấy Tab giả lập thứ {slot_num} (Index {req_idx})!\n\n"
+                            f"Hiện tại hệ thống chỉ có {count} tab LDPlayer: {', '.join(tab_names)}.\n\n"
+                            f"Tool sẽ tự động đóng cửa sổ Slot {slot_num} này để tránh chạy trùng lặp.",
+                            "TS Origin Control V3 - Thiếu Tab Giả Lập",
+                            0x30  # MB_ICONWARNING
+                        )
+                    except Exception:
+                        pass
+                    # Tự động đóng hoàn toàn cửa sổ slot này
+                    self.after(0, self._destroy_app_completely)
+
+                self.after(300, _alert_missing_tab_and_close)
         else:
             self.combo_ld_tabs.configure(values=["Không tìm thấy tab LD nào"])
             self.combo_ld_tabs.set("Không tìm thấy tab LD nào")
@@ -8127,10 +8285,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                 return cached["img"]
 
         # 2. Ưu tiên 1: Chụp trực tiếp qua ADB exec-out stream (Zero Disk I/O - Không ghi đĩa SSD)
-        ld_dir = getattr(self, 'ld_path', '') or os.path.dirname(dnconsole_path)
-        adb_path = os.path.join(ld_dir, "adb.exe")
-        if not os.path.exists(adb_path):
-            adb_path = os.path.join(os.path.dirname(dnconsole_path), "adb.exe")
+        adb_path = self._get_adb_path()
 
         creation_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
 
@@ -8151,6 +8306,19 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
 
             # Ưu tiên thiết bị đã kết nối thành công trước đó, sau đó thử các candidate còn lại
             active_dev = self._active_adb_device.get(tab_key)
+            if not active_dev:
+                # Tự động connect cổng ADB của tab này để chuyển trạng thái sang online/device
+                try:
+                    subprocess.run(
+                        [adb_path, "connect", f"127.0.0.1:{port_5555}"],
+                        timeout=1.5,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=creation_flags
+                    )
+                except Exception:
+                    pass
+
             devices_to_try = ([active_dev] if active_dev in candidate_devices else []) + \
                              [d for d in candidate_devices if d != active_dev]
 
@@ -8171,6 +8339,9 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                             return img
                 except Exception:
                     pass
+
+            # Nếu cả hai candidate đều thất bại, xóa active_dev để chu kỳ sau tái kết nối
+            self._active_adb_device.pop(tab_key, None)
 
         # 3. Ưu tiên 2 (Fallback an toàn): Chụp qua file tạm trên đĩa nếu ADB Direct Stream chưa sẵn sàng
         temp_dir = os.path.join(tempfile.gettempdir(), "ts_origin_temp")
@@ -8490,36 +8661,170 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
 
 
 
-def _ensure_single_instance():
-    """Đảm bảo chỉ có duy nhất 1 phiên bản tool chạy cùng lúc trên Windows.
-    Nếu phát hiện tool đã mở trước đó, gửi lệnh đưa cửa sổ tool cũ lên đầu màn hình và thoát ngay."""
+def _has_other_running_slots(current_slot: int = 1) -> bool:
+    """Kiểm tra xem còn cửa sổ Tool slot khác nào đang chạy không để tránh kill nhầm ADB server"""
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        ERROR_ALREADY_EXISTS = 183
+        for s in range(1, 11):
+            if s == current_slot:
+                continue
+            m_name = f"Global\\TS_Origin_Control_v3_Slot_{s}"
+            m = kernel32.CreateMutexW(None, False, m_name)
+            err = kernel32.GetLastError()
+            if m:
+                kernel32.CloseHandle(m)
+            if err == ERROR_ALREADY_EXISTS:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _get_ld_tabs_info_fast():
+    """Dò tìm nhanh số lượng và danh sách tên tab LDPlayer hiện có trên hệ thống (chạy < 30ms)"""
+    try:
+        import os, sys, json, subprocess
+        app_d = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+        cfg_path = os.path.join(app_d, "config.json")
+        ld_p = ""
+        if os.path.exists(cfg_path):
+            try:
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                    ld_p = cfg.get("ld_path", "")
+            except Exception:
+                pass
+        cand_dirs = [ld_p] if ld_p else []
+        cand_dirs += [
+            r"C:\LDPlayer\LDPlayer9",
+            r"C:\LDPlayer",
+            r"C:\leidian\LDPlayer9",
+            r"C:\Program Files\LDPlayer9",
+            r"C:\Program Files\LDPlayer\LDPlayer9"
+        ]
+        creation_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+        for d in cand_dirs:
+            if not d:
+                continue
+            for exe in ["ldconsole.exe", "dnconsole.exe"]:
+                p = os.path.join(d, exe)
+                if os.path.exists(p):
+                    try:
+                        res = subprocess.run([p, "list2"], timeout=2.0, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=creation_flags)
+                        if res and res.returncode == 0 and res.stdout:
+                            lines = [l.strip() for l in res.stdout.strip().splitlines() if l.strip()]
+                            names = [l.split(',')[1].strip() for l in lines if len(l.split(',')) >= 2]
+                            return len(lines), names
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    return None, []
+
+
+def _allocate_instance_slot():
+    """Tự động cấp phát Slot (1..10), Tab Index (0..9) và Cổng Web (8081..8090)
+    cho mỗi lần mở Tool độc lập theo thứ tự:
+      Lần 1: Slot 1 ➔ Tab 0 (LDPlayer) ➔ Port 8081
+      Lần 2: Slot 2 ➔ Tab 1 (LDPlayer-1) ➔ Port 8082
+      Lần 3: Slot 3 ➔ Tab 2 (LDPlayer-2) ➔ Port 8083
+      ...
+    Sử dụng Named Mutex của Windows để đảm bảo mỗi slot chỉ có duy nhất 1 tool chiếm giữ.
+    Hỗ trợ tham số dòng lệnh: --tab <tab_index> và/hoặc --port <port>.
+    """
     import ctypes
-    import urllib.request
+    import sys
     import json
+    import os
+    import urllib.request
 
-    MUTEX_NAME = "Global\\TS_Origin_Control_v3_SingleInstance_Mutex_Unique"
+    cli_port = None
+    cli_tab = None
+    for i, arg in enumerate(sys.argv):
+        if arg == "--port" and i + 1 < len(sys.argv):
+            try:
+                cli_port = int(sys.argv[i + 1])
+            except Exception:
+                pass
+        elif arg == "--tab" and i + 1 < len(sys.argv):
+            cli_tab = str(sys.argv[i + 1]).strip()
+
     kernel32 = ctypes.windll.kernel32
-    mutex = kernel32.CreateMutexW(None, False, MUTEX_NAME)
-    last_error = kernel32.GetLastError()
     ERROR_ALREADY_EXISTS = 183
+    MAX_SLOTS = 10
 
-    if last_error == ERROR_ALREADY_EXISTS:
-        try:
-            req = urllib.request.Request(
-                "http://127.0.0.1:8082/api/action",
-                data=json.dumps({"action": "show_window"}).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
-                method="POST"
-            )
-            urllib.request.urlopen(req, timeout=1.5)
-        except Exception:
-            pass
-        sys.exit(0)
-    return mutex
+    # 1. Nếu có chỉ định rõ ràng qua tham số dòng lệnh:
+    if cli_port is not None or cli_tab is not None:
+        target_slot = (cli_port - 8080) if cli_port else (int(cli_tab) + 1 if cli_tab.isdigit() else 1)
+        port = cli_port if cli_port else (8080 + target_slot)
+        tab_idx = cli_tab if cli_tab is not None else str(target_slot - 1)
+        mutex_name = f"Global\\TS_Origin_Control_v3_Slot_{target_slot}"
+        mutex = kernel32.CreateMutexW(None, False, mutex_name)
+        if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+            kernel32.CloseHandle(mutex)
+            try:
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/api/action",
+                    data=json.dumps({"action": "show_window"}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST"
+                )
+                urllib.request.urlopen(req, timeout=1.5)
+            except Exception:
+                pass
+            sys.exit(0)
+        return target_slot, port, tab_idx, mutex
+
+    # 2. Tự động dò tìm slot trống tuần tự từ Slot 1 đến MAX_SLOTS:
+    total_tabs, tab_names_list = _get_ld_tabs_info_fast()
+
+    for slot in range(1, MAX_SLOTS + 1):
+        mutex_name = f"Global\\TS_Origin_Control_v3_Slot_{slot}"
+        mutex = kernel32.CreateMutexW(None, False, mutex_name)
+        if kernel32.GetLastError() != ERROR_ALREADY_EXISTS:
+            # Nếu phát hiện slot này vượt quá số tab LDPlayer hiện có: tự động cảnh báo và đóng slot luôn!
+            if total_tabs is not None and total_tabs > 0 and slot > total_tabs:
+                kernel32.CloseHandle(mutex)
+                try:
+                    ctypes.windll.user32.MessageBoxW(
+                        0,
+                        f"Không tìm thấy Tab giả lập thứ {slot} (Index {slot - 1})!\n\n"
+                        f"Hiện tại hệ thống chỉ có {total_tabs} tab LDPlayer: {', '.join(tab_names_list)}.\n\n"
+                        f"Tool sẽ tự động đóng và không mở thêm để tránh chạy trùng lặp.",
+                        "TS Origin Control V3 - Thiếu Tab Giả Lập",
+                        0x30  # MB_ICONWARNING
+                    )
+                except Exception:
+                    pass
+                sys.exit(0)
+
+            port = 8080 + slot  # Slot 1 -> 8081, Slot 2 -> 8082...
+            tab_idx = str(slot - 1)
+            return slot, port, tab_idx, mutex
+        kernel32.CloseHandle(mutex)
+
+    # 3. Nếu tất cả các slot đều đã bị chiếm
+    try:
+        ctypes.windll.user32.MessageBoxW(
+            0,
+            "Tất cả các Slot / Cổng Tool hiện có (8081-8090) đều đang được chạy!\nNếu cần mở thêm, vui lòng đóng bớt một cửa sổ Tool cũ.",
+            "TS Origin Control V3",
+            0x40
+        )
+    except Exception:
+        pass
+    sys.exit(0)
 
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
-    _app_instance_mutex = _ensure_single_instance()
-    app = ToolLDPlayerGUI()
+    slot_idx, web_port, assigned_tab_idx, slot_mutex = _allocate_instance_slot()
+    app = ToolLDPlayerGUI(
+        slot_index=slot_idx,
+        web_port=web_port,
+        assigned_tab_index=assigned_tab_idx,
+        slot_mutex=slot_mutex
+    )
     app.mainloop()

@@ -56,12 +56,12 @@ If Not isAlreadyRunning Then
     End If
 End If
 
-' 4. Bat Cua So Web App Dien Thoai (Cong 8082 chuan cho V3)
+' 4. Bat Cua So Web App Dien Thoai (Cong 8080 Hub Gateway cho V3)
 chromePath1 = "C:\Program Files\Google\Chrome\Application\chrome.exe"
 chromePath2 = "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
 edgePath1 = "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
 edgePath2 = "C:\Program Files\Microsoft\Edge\Application\msedge.exe"
-chromeArgs = "--app=http://localhost:8082 --window-size=510,720"
+chromeArgs = "--app=http://localhost:8080 --window-size=510,720"
 
 browserPath = ""
 If oFSO.FileExists(chromePath1) Then
@@ -77,5 +77,5 @@ End If
 If browserPath <> "" Then
     oWS.Run """" & browserPath & """ " & chromeArgs, 1, False
 Else
-    oWS.Run "http://localhost:8082", 1, False
+    oWS.Run "http://localhost:8080", 1, False
 End If

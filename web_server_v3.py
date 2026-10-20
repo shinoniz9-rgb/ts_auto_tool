@@ -12,6 +12,7 @@ import urllib.parse
 import re
 import cv2
 import numpy as np
+import concurrent.futures
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 def get_local_ip():
@@ -178,6 +179,17 @@ class LDStreamManager:
                 sleep_sec = 0.5 if req_mode == "0.5s" else (2.0 if req_mode == "2s" else 1.0)
                 time.sleep(sleep_sec)
             else:
+                # Tự động kết nối lại cổng giả lập này nếu bị offline hoặc rớt kết nối
+                try:
+                    subprocess.run(
+                        [adb_path, "connect", f"127.0.0.1:{5555 + tab_num * 2}"],
+                        timeout=1.5,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=creation_flags
+                    )
+                except Exception:
+                    pass
                 time.sleep(0.5)
 
 
@@ -206,6 +218,11 @@ HTML_PAGE = """<!DOCTYPE html>
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="TS Origin v3">
     <title>TS Origin - Mobile Control v3</title>
+    <script>
+        if (window.self !== window.top || window.location.search.includes('embed=1')) {
+            document.documentElement.classList.add('in-iframe');
+        }
+    </script>
     <!-- Apple iOS Touch Icon & PWA Manifest -->
     <link rel="apple-touch-icon" href="/assets/icons/apple-touch-icon.png">
     <link rel="apple-touch-icon" sizes="180x180" href="/assets/icons/apple-touch-icon.png">
@@ -267,48 +284,6 @@ HTML_PAGE = """<!DOCTYPE html>
             user-select: none;
         }
 
-        /* Top Header */
-        .app-header {
-            position: sticky;
-            top: 0;
-            z-index: 100;
-            background: rgba(26, 28, 35, 0.92);
-            backdrop-filter: blur(18px);
-            -webkit-backdrop-filter: blur(18px);
-            border-bottom: 1px solid var(--border);
-            padding: calc(12px + env(safe-area-inset-top, 0px)) 16px 12px 16px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-
-        .brand {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-weight: 800;
-            font-size: 1.18rem;
-            letter-spacing: -0.4px;
-            background: linear-gradient(135deg, #38bdf8 0%, #818cf8 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-
-        .status-pill {
-            display: flex;
-            align-items: center;
-            gap: 7px;
-            font-size: 0.78rem;
-            font-weight: 700;
-            padding: 5px 12px;
-            border-radius: 9999px;
-            background: rgba(16, 185, 129, 0.12);
-            color: #34d399;
-            border: 1px solid rgba(16, 185, 129, 0.3);
-            box-shadow: 0 0 12px rgba(16, 185, 129, 0.15);
-            transition: all 0.3s ease;
-        }
-
         .status-dot {
             width: 8px;
             height: 8px;
@@ -332,10 +307,17 @@ HTML_PAGE = """<!DOCTYPE html>
         .container {
             max-width: 580px;
             margin: 0 auto;
-            padding: 14px 12px;
+            padding: calc(10px + env(safe-area-inset-top, 0px)) 12px 14px 12px;
             display: flex;
             flex-direction: column;
             gap: 14px;
+        }
+
+        .in-iframe body {
+            padding-top: 0 !important;
+        }
+        .in-iframe .container {
+            padding-top: 8px !important;
         }
 
         .tab-pane {
@@ -355,46 +337,6 @@ HTML_PAGE = """<!DOCTYPE html>
             to { opacity: 1; transform: translateY(0); }
         }
 
-        /* LDPlayer Carousel Header */
-        .ld-carousel-wrapper {
-            position: sticky;
-            top: 55px;
-            z-index: 99;
-            background: rgba(18, 19, 23, 0.95);
-            backdrop-filter: blur(16px);
-            -webkit-backdrop-filter: blur(16px);
-            border-bottom: 1px solid rgba(56, 189, 248, 0.2);
-            padding: 9px 14px;
-            overflow-x: auto;
-            white-space: nowrap;
-            scrollbar-width: none;
-        }
-        .ld-carousel-wrapper::-webkit-scrollbar { display: none; }
-        .ld-carousel {
-            display: inline-flex;
-            gap: 8px;
-        }
-        .ld-pill {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 7px 15px;
-            border-radius: 999px;
-            background: #1a1c23;
-            border: 1px solid var(--border);
-            font-size: 0.8rem;
-            font-weight: 700;
-            color: var(--text-muted);
-            cursor: pointer;
-            transition: all 0.25s ease;
-        }
-        .ld-pill:active { transform: scale(0.95); }
-        .ld-pill.active {
-            background: rgba(56, 189, 248, 0.15);
-            border-color: #38bdf8;
-            color: #38bdf8;
-            box-shadow: 0 0 14px rgba(56, 189, 248, 0.35);
-        }
 
         /* Cards */
         .card {
@@ -808,7 +750,6 @@ HTML_PAGE = """<!DOCTYPE html>
         /* Screen Preview & Fullscreen Theater Mode */
         .preview-box {
             width: 100%;
-            aspect-ratio: 16 / 9;
             border-radius: 12px;
             overflow: hidden;
             background: #090d16;
@@ -826,7 +767,8 @@ HTML_PAGE = """<!DOCTYPE html>
 
         .preview-img {
             width: 100%;
-            height: 100%;
+            height: auto;
+            max-height: 70vh;
             display: block;
             object-fit: contain;
             pointer-events: none;
@@ -2062,21 +2004,8 @@ HTML_PAGE = """<!DOCTYPE html>
 </head>
 <body>
 
-    <!-- Header -->
-    <header class="app-header">
-        <div class="brand">
-            <span>TS Origin v3</span>
-        </div>
-        <div class="status-pill" id="statusPill">
-            <span class="status-dot" id="statusDot"></span>
-            <span id="statusText">Sẵn sàng</span>
-        </div>
-    </header>
 
-    <!-- LDPlayer Carousel Header -->
-    <div class="ld-carousel-wrapper">
-        <div class="ld-carousel" id="ldCarousel"></div>
-    </div>
+
 
     <div class="container">
 
@@ -2111,7 +2040,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 </div>
 
                 <div class="preview-box" id="screenPreviewBox">
-                    <img id="screenImg" class="preview-img" src="/api/screenshot?q=1s" alt="Màn hình giả lập TS Origin">
+                    <img id="screenImg" class="preview-img" src="api/screenshot?q=1s" alt="Màn hình giả lập TS Origin">
                     <div class="fs-rotate-hint">Xoay ngang điện thoại để xem cực đại</div>
                 </div>
 
@@ -2602,10 +2531,18 @@ HTML_PAGE = """<!DOCTYPE html>
             }
         }
 
+        const API_BASE = (function() {
+            const parts = window.location.pathname.split('/');
+            if (parts[1] === 'proxy' && parts[2]) {
+                return '/proxy/' + parts[2];
+            }
+            return '';
+        })();
+
         let isDisconnected = false;
         async function fetchStatus() {
             try {
-                const res = await fetch('/api/status');
+                const res = await fetch(API_BASE + '/api/status');
                 if (!res.ok) throw new Error('HTTP ' + res.status);
                 const data = await res.json();
                 if (isDisconnected) {
@@ -2658,14 +2595,8 @@ HTML_PAGE = """<!DOCTYPE html>
 
             const statusDot = document.getElementById('statusDot');
             const statusText = document.getElementById('statusText');
-
-            if (data.is_running) {
-                statusDot.className = 'status-dot running';
-                statusText.innerText = 'Đang chạy Auto...';
-            } else {
-                statusDot.className = 'status-dot';
-                statusText.innerText = 'Sẵn sàng';
-            }
+            if (statusDot) statusDot.className = data.is_running ? 'status-dot running' : 'status-dot';
+            if (statusText) statusText.innerText = data.is_running ? 'Đang chạy Auto...' : 'Sẵn sàng';
 
             const newTabs = data.tabs || [];
             if (data.selected_tab && currentSelectedTab === '0') {
@@ -2673,39 +2604,16 @@ HTML_PAGE = """<!DOCTYPE html>
             }
 
             const fsTabTitle = document.getElementById('fsTabTitle');
-            if (fsTabTitle) fsTabTitle.innerText = data.selected_tab ? `🖥️ ${data.selected_tab}` : '🖥️ Tab LDPlayer';
+            if (fsTabTitle) {
+                const pInfo = data.port ? ` (Port ${data.port})` : '';
+                fsTabTitle.innerText = data.selected_tab ? `🖥️ ${data.selected_tab}${pInfo}` : '🖥️ Tab LDPlayer';
+            }
 
             const fsStatusDot = document.getElementById('fsStatusDot');
             if (fsStatusDot) {
                 fsStatusDot.className = data.is_running ? 'status-dot running' : 'status-dot';
             }
 
-            const carousel = document.getElementById('ldCarousel');
-            if (carousel) {
-                const curTabPills = Array.from(carousel.querySelectorAll('.ld-pill span:last-child')).map(s => s.innerText);
-                const isCarouselDiff = newTabs.length !== curTabPills.length || newTabs.some((t, i) => t !== curTabPills[i]);
-                if (isCarouselDiff) {
-                    if (newTabs.length > 0) {
-                        carousel.innerHTML = newTabs.map(t => {
-                            const isActive = (t === data.selected_tab);
-                            return `<div class="ld-pill ${isActive ? 'active' : ''}" onclick="onTabChanged('${t}')">
-                                <span>📱</span><span>${t}</span>
-                            </div>`;
-                        }).join('');
-                    } else {
-                        carousel.innerHTML = '<div class="ld-pill"><span>⚠️</span><span>Chưa kết nối Tab LD</span></div>';
-                    }
-                } else {
-                    carousel.querySelectorAll('.ld-pill').forEach((pill, idx) => {
-                        const t = newTabs[idx];
-                        if (t === data.selected_tab) {
-                            pill.classList.add('active');
-                        } else {
-                            pill.classList.remove('active');
-                        }
-                    });
-                }
-            }
 
             const charCombos = ['combo_A_char', 'combo_B_don_char', 'combo_B_team_char', 'combo_D_team_char'];
             charCombos.forEach(cid => {
@@ -2949,7 +2857,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 applyDynamicUIRules();
             }
             try {
-                const res = await fetch('/api/action', {
+                const res = await fetch(API_BASE + '/api/action', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({action, ...payload})
@@ -3020,35 +2928,7 @@ HTML_PAGE = """<!DOCTYPE html>
         }
 
         function onTabChanged(tab) {
-            currentSelectedTab = tab;
-            
-            // 1. Phản hồi giao diện nút chọn tab ngay lập tức (Zero Latency)
-            const carousel = document.getElementById('ldCarousel');
-            if (carousel) {
-                carousel.querySelectorAll('.ld-pill').forEach(pill => {
-                    const nameSpan = pill.querySelector('span:last-child');
-                    if (nameSpan && nameSpan.innerText.trim() === String(tab).trim()) {
-                        pill.classList.add('active');
-                    } else {
-                        pill.classList.remove('active');
-                    }
-                });
-            }
-            const fsTabTitle = document.getElementById('fsTabTitle');
-            if (fsTabTitle) fsTabTitle.innerText = `Tab ${tab}`;
-
-            // 2. Nếu đang xem Màn hình giả lập, chuyển luồng nạp frame sang tab mới ngay lập tức
-            const pane = document.getElementById('tabPane_screen');
-            if (pane && pane.classList.contains('active')) {
-                isStreamBusy = false;
-                if (activeStreamTimer) clearTimeout(activeStreamTimer);
-                isStreamRunning = true;
-                fetchStreamNextFrame();
-            }
-
-            // 3. Gửi lệnh đổi tab về Tool Core
-            sendAction('set_tab', {tab}, false);
-            setTimeout(fetchStatus, 250);
+            showToast('⚠️ Cổng này đã được khóa cố định theo Tab để tránh xung đột!');
         }
 
         function refreshTabs() {
@@ -3102,7 +2982,7 @@ HTML_PAGE = """<!DOCTYPE html>
             isStreamBusy = true;
             const nextImg = new Image();
             const targetTab = currentSelectedTab || '0';
-            const url = '/api/screenshot?tab=' + encodeURIComponent(targetTab) + '&q=' + currentQuality + '&_t=' + Date.now();
+            const url = API_BASE + '/api/screenshot?tab=' + encodeURIComponent(targetTab) + '&q=' + currentQuality + '&_t=' + Date.now();
 
             // Timeout an toàn: Nếu mạng lag hoặc điện thoại background, tự động giải phóng sau 2.5s
             const watchdogTimer = setTimeout(() => {
@@ -3520,7 +3400,7 @@ class ToolWebRequestHandler(BaseHTTPRequestHandler):
                 "inputs": inputs,
                 "logs": getattr(app, 'recent_logs', [])[-40:],
                 "local_ip": getattr(app, 'web_ip', get_local_ip()),
-                "port": getattr(app, 'web_port', 8082),
+                "port": getattr(app, 'web_port', 8081),
                 "update_info": getattr(app, 'update_info', None)
             }
             body = json.dumps(data, ensure_ascii=False).encode('utf-8')
@@ -3875,8 +3755,8 @@ class ToolWebRequestHandler(BaseHTTPRequestHandler):
         self.send_error(404, "Not Found")
 
 
-def start_web_server(app, port=8082):
-    """Khởi động Web Server ngầm trên port 8082"""
+def start_web_server(app, port=8081):
+    """Khởi động Web Server ngầm trên port được cấp phát (mặc định 8081 cho Tab 1)"""
     local_ip = get_local_ip()
     app.web_ip = local_ip
     app.web_port = port
@@ -3900,6 +3780,1021 @@ def start_web_server(app, port=8082):
             break
 
     return None
+
+
+class HubWebRequestHandler(BaseHTTPRequestHandler):
+    """Máy chủ Hub Gateway tại Cổng 8080: Quản lý Tổng Quan Đa Tab và làm Reverse Proxy"""
+    def log_message(self, format, *args):
+        pass  # Tắt log stdout của server
+
+    def do_GET(self):
+        parsed = self.path.split('?')[0]
+
+        # 1. Trang chủ Hub
+        if parsed == "/" or parsed == "/index.html":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            html = get_hub_html().encode("utf-8")
+            self.send_header("Content-Length", str(len(html)))
+            self.end_headers()
+            self.wfile.write(html)
+            return
+
+        # 2. API lấy danh sách toàn bộ tab đang active
+        if parsed == "/api/hub/status":
+            self.handle_hub_status()
+            return
+
+        # 3. Trailing slash redirect cho proxy: /proxy/<port> -> /proxy/<port>/
+        if re.match(r"^/proxy/\d+$", self.path):
+            self.send_response(302)
+            self.send_header("Location", self.path + "/")
+            self.end_headers()
+            return
+
+        # 4. Reverse Proxy: /proxy/<port>/...
+        if self.path.startswith("/proxy/"):
+            self.handle_proxy()
+            return
+
+        # 5. Favicon / Assets / Manifest
+        if parsed in ("/favicon.ico", "/manifest.json") or parsed.startswith("/assets/"):
+            target_port = getattr(getattr(self.server, 'app', None), 'web_port', 8081)
+            self.forward_raw("127.0.0.1", target_port, self.path)
+            return
+
+        self.send_error(404, "Not Found")
+
+    def do_POST(self):
+        if self.path == "/api/hub/launch_tab":
+            self.handle_hub_launch_tab()
+            return
+        if self.path.startswith("/proxy/"):
+            self.handle_proxy()
+            return
+        self.send_error(404, "Not Found")
+
+    def handle_hub_launch_tab(self):
+        """Khởi chạy thêm 1 cửa sổ Tool mới (tự động nhận slot và tab tiếp theo)"""
+        try:
+            app_dir = get_app_dir()
+            exe_path = os.path.join(app_dir, "TS_Origin_Control_V3.exe")
+            dist_exe_path = os.path.join(app_dir, "dist", "TS_Origin_Control_V3.exe")
+            py_path = os.path.join(app_dir, "main_v3.py")
+            if os.path.exists(exe_path):
+                subprocess.Popen([exe_path], cwd=app_dir)
+            elif os.path.exists(dist_exe_path):
+                subprocess.Popen([dist_exe_path], cwd=os.path.join(app_dir, "dist"))
+            elif os.path.exists(py_path):
+                subprocess.Popen([sys.executable, py_path], cwd=app_dir)
+            res_body = json.dumps({"success": True, "msg": "Đang khởi chạy Tab tiếp theo..."}).encode('utf-8')
+        except Exception as e:
+            res_body = json.dumps({"success": False, "msg": str(e)}).encode('utf-8')
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(res_body)))
+        self.end_headers()
+        self.wfile.write(res_body)
+
+    def handle_hub_status(self):
+        """Quét trạng thái toàn bộ các port 8081-8090 song song siêu tốc qua ThreadPoolExecutor"""
+        active_tabs = []
+        def _fetch_one(p):
+            try:
+                req = urllib.request.Request(f"http://127.0.0.1:{p}/api/status", headers={"User-Agent": "TSHub/1.0"})
+                with urllib.request.urlopen(req, timeout=0.25) as resp:
+                    if resp.status == 200:
+                        d = json.loads(resp.read().decode('utf-8'))
+                        d["port"] = p
+                        return d
+            except Exception:
+                return None
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
+            results = list(ex.map(_fetch_one, range(8081, 8091)))
+            for item in results:
+                if item:
+                    active_tabs.append(item)
+
+        res_body = json.dumps({
+            "hub_active": True,
+            "total_tabs": len(active_tabs),
+            "tabs": active_tabs
+        }, ensure_ascii=False).encode('utf-8')
+
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(res_body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(res_body)
+
+    def handle_proxy(self):
+        m = re.match(r"^/proxy/(\d+)(/.*)?$", self.path)
+        if not m:
+            self.send_error(400, "Bad Proxy URL")
+            return
+        target_port = int(m.group(1))
+        target_subpath = m.group(2) or "/"
+
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(content_length) if content_length > 0 else None
+        target_url = f"http://127.0.0.1:{target_port}{target_subpath}"
+
+        headers = {k: v for k, v in self.headers.items() if k.lower() not in ('host', 'content-length')}
+
+        try:
+            req = urllib.request.Request(target_url, data=body, headers=headers, method=self.command)
+            with urllib.request.urlopen(req, timeout=8.0) as resp:
+                self.send_response(resp.status)
+                for h_name, h_val in resp.headers.items():
+                    if h_name.lower() not in ('transfer-encoding', 'connection'):
+                        self.send_header(h_name, h_val)
+                self.end_headers()
+                shutil.copyfileobj(resp, self.wfile)
+        except urllib.error.HTTPError as e:
+            self.send_response(e.code)
+            for h_name, h_val in e.headers.items():
+                self.send_header(h_name, h_val)
+            self.end_headers()
+            self.wfile.write(e.read())
+        except Exception as e:
+            self.send_error(502, f"Proxy Error to port {target_port}: {e}")
+
+    def forward_raw(self, host, port, path):
+        target_url = f"http://{host}:{port}{path}"
+        try:
+            req = urllib.request.Request(target_url, headers={k: v for k, v in self.headers.items() if k.lower() != 'host'})
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                self.send_response(resp.status)
+                for h_name, h_val in resp.headers.items():
+                    if h_name.lower() not in ('transfer-encoding', 'connection'):
+                        self.send_header(h_name, h_val)
+                self.end_headers()
+                shutil.copyfileobj(resp, self.wfile)
+        except Exception:
+            self.send_error(404, "Not Found")
+
+
+def check_and_start_hub_gateway(app, silent: bool = False):
+    """Kiểm tra và khởi động Hub Gateway (Trang Tổng Quản Đa Tab) tại Cổng 8080 nếu chưa có ai chạy"""
+    try:
+        test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        test_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        test_sock.bind(('0.0.0.0', 8080))
+        test_sock.close()
+    except OSError:
+        app.is_hub_master = False
+        if not silent:
+            local_ip = get_local_ip()
+            app.log_info(f"ℹ️ [HUB GATEWAY] Cổng 8080 đã được quản lý bởi Master Hub. Xem tổng quan tại: http://{local_ip}:8080")
+        return None
+
+    try:
+        hub_server = SilentThreadingHTTPServer(('0.0.0.0', 8080), HubWebRequestHandler)
+        hub_server.app = app
+        app.is_hub_master = True
+        t = threading.Thread(target=hub_server.serve_forever, daemon=True)
+        t.start()
+        local_ip = get_local_ip()
+        app.log_info(f"🌟 [HUB GATEWAY] Đã khởi động Trang Tổng Quản Đa Tab tại: http://{local_ip}:8080")
+        return hub_server
+    except Exception as e:
+        if not silent:
+            app.log_warning(f"Không thể khởi động Hub Gateway 8080: {e}")
+        return None
+
+
+def get_hub_html():
+    """Tạo giao diện Trang Tổng Quản Đa Tab (Hub Gateway) hiện đại, trực quan, hỗ trợ xem và điều khiển toàn bộ các Tab."""
+    return """<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="TS Origin Hub">
+    <title>TS Origin</title>
+    <style>
+        :root {
+            --bg-base: #0b0f19;
+            --bg-surface: #111827;
+            --bg-card: rgba(17, 24, 39, 0.85);
+            --border-card: rgba(255, 255, 255, 0.08);
+            --border-active: #06b6d4;
+            --accent-cyan: #06b6d4;
+            --accent-green: #10b981;
+            --accent-amber: #f59e0b;
+            --accent-rose: #f43f5e;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --text-sub: #64748b;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            -webkit-text-size-adjust: 100%;
+            -webkit-font-smoothing: antialiased;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background: radial-gradient(circle at 50% 0%, #1e293b 0%, #0b0f19 80%);
+            color: var(--text-main);
+            height: 100vh;
+            height: 100dvh;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        /* Top Bar */
+        .hub-navbar {
+            background: rgba(11, 15, 25, 0.95);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border-card);
+            padding: calc(8px + env(safe-area-inset-top, 0px)) 16px 8px 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-shrink: 0;
+            z-index: 100;
+            gap: 12px;
+        }
+        .hub-nav-top {
+            display: contents;
+        }
+        .hub-brand {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 15px;
+            font-weight: 800;
+            letter-spacing: 0.5px;
+            color: #fff;
+            white-space: nowrap;
+        }
+
+
+        /* Carousel Navigation Tabs */
+        .hub-tabs-scroll {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            overflow-x: auto;
+            scrollbar-width: none;
+            -webkit-overflow-scrolling: touch;
+            padding: 2px 0;
+            flex: 1;
+        }
+        .hub-tabs-scroll::-webkit-scrollbar { display: none; }
+
+        .hub-nav-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border-card);
+            color: var(--text-muted);
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            white-space: nowrap;
+        }
+        .hub-nav-pill:hover {
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
+        }
+        .hub-nav-pill.active {
+            background: linear-gradient(135deg, rgba(6, 182, 212, 0.25), rgba(59, 130, 246, 0.25));
+            border-color: var(--accent-cyan);
+            color: #fff;
+            box-shadow: 0 0 12px rgba(6, 182, 212, 0.3);
+        }
+        .dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: #64748b;
+        }
+        .dot.running {
+            background: var(--accent-green);
+            box-shadow: 0 0 8px var(--accent-green);
+            animation: pulse-dot 1.5s infinite;
+        }
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(0.85); }
+        }
+
+        .hub-controls-right {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .hub-btn-icon {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border-card);
+            color: var(--text-muted);
+            border-radius: 8px;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        .hub-btn-icon:hover {
+            background: rgba(255, 255, 255, 0.12);
+            color: #fff;
+        }
+
+        /* Container Views */
+        .hub-content {
+            flex: 1;
+            min-height: 0;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .hub-view {
+            display: none;
+            width: 100%;
+            height: 100%;
+            flex: 1;
+            min-height: 0;
+        }
+        .hub-view.active {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            min-height: 0;
+        }
+        #viewOverview {
+            flex: 1;
+            min-height: 0;
+            overflow-y: auto;
+            overflow-x: hidden;
+            -webkit-overflow-scrolling: touch;
+        }
+        #viewTabDetail {
+            flex: 1;
+            min-height: 0;
+            overflow: hidden;
+        }
+
+        /* Overview Grid View */
+        .hub-overview-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            width: 100%;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .hub-stats-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 12px;
+        }
+        .hub-stat-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-card);
+            backdrop-filter: blur(12px);
+            border-radius: 12px;
+            padding: 12px 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .hub-stat-num {
+            font-size: 20px;
+            font-weight: 800;
+            color: #fff;
+        }
+        .hub-stat-label {
+            font-size: 11px;
+            color: var(--text-muted);
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        /* Tab Cards Grid */
+        .hub-cards-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 16px;
+        }
+        .hub-tab-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-card);
+            backdrop-filter: blur(12px);
+            border-radius: 14px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+        }
+        .hub-tab-card:hover {
+            transform: translateY(-2px);
+            border-color: rgba(6, 182, 212, 0.4);
+            box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.6);
+        }
+        .hub-card-header {
+            padding: 10px 14px;
+            background: rgba(255, 255, 255, 0.02);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .hub-card-title {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 700;
+            font-size: 14px;
+            color: #fff;
+        }
+
+        .hub-status-tag {
+            font-size: 11px;
+            font-weight: 700;
+            padding: 3px 8px;
+            border-radius: 999px;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .hub-status-tag.running {
+            background: rgba(16, 185, 129, 0.15);
+            color: #34d399;
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+        .hub-status-tag.standby {
+            background: rgba(148, 163, 184, 0.12);
+            color: #94a3b8;
+            border: 1px solid rgba(148, 163, 184, 0.2);
+        }
+
+        /* Screen Preview */
+        .hub-screen-box {
+            width: 100%;
+            background: #000;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        .hub-screen-img {
+            width: 100%;
+            height: auto;
+            max-height: 60vh;
+            display: block;
+            object-fit: contain;
+            background: #000;
+            transition: opacity 0.2s;
+        }
+        .hub-screen-overlay {
+            position: absolute;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.4);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            transition: opacity 0.2s;
+            color: #fff;
+            font-weight: 700;
+            font-size: 13px;
+            gap: 6px;
+        }
+        .hub-screen-box:hover .hub-screen-overlay {
+            opacity: 1;
+        }
+
+        /* Card Actions */
+        .hub-card-actions {
+            padding: 10px 14px;
+            background: rgba(255, 255, 255, 0.02);
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+            display: flex;
+            align-items: center;
+        }
+        .hub-btn {
+            width: 100%;
+            padding: 9px 12px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 700;
+            cursor: pointer;
+            border: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            transition: all 0.2s;
+        }
+        .hub-btn-view {
+            background: linear-gradient(135deg, rgba(6, 182, 212, 0.2), rgba(59, 130, 246, 0.25));
+            color: #67e8f9;
+            border: 1px solid rgba(6, 182, 212, 0.4);
+        }
+        .hub-btn-view:hover {
+            background: linear-gradient(135deg, rgba(6, 182, 212, 0.35), rgba(59, 130, 246, 0.4));
+            color: #fff;
+            box-shadow: 0 0 14px rgba(6, 182, 212, 0.35);
+        }
+
+        /* Dedicated Tab View (IFrame embed) */
+        .hub-detail-bar {
+            background: #111827;
+            border-bottom: 1px solid var(--border-card);
+            padding: 6px 14px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 13px;
+            height: 42px;
+            flex-shrink: 0;
+            box-sizing: border-box;
+        }
+        .hub-back-btn {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid var(--border-card);
+            color: #fff;
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            text-decoration: none;
+            transition: all 0.2s;
+        }
+        .hub-back-btn:hover {
+            background: rgba(255, 255, 255, 0.16);
+            border-color: var(--accent-cyan);
+            color: #67e8f9;
+        }
+        .hub-iframe-wrapper {
+            flex: 1;
+            min-height: 0;
+            width: 100%;
+            height: 100%;
+            background: #0b0f19;
+            position: relative;
+            overflow: hidden;
+            -webkit-overflow-scrolling: touch;
+        }
+        .hub-iframe {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            border: none;
+            display: block;
+        }
+
+        /* Empty state */
+        .hub-empty-state {
+            grid-column: 1 / -1;
+            text-align: center;
+            padding: 60px 20px;
+            background: var(--bg-card);
+            border: 1px dashed rgba(255, 255, 255, 0.15);
+            border-radius: 16px;
+        }
+        .hub-empty-state h3 { font-size: 16px; margin-bottom: 8px; color: #fff; }
+        .hub-empty-state p { font-size: 13px; color: var(--text-muted); }
+
+        /* Toast */
+        #hubToast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            padding: 10px 16px;
+            background: #0f172a;
+            border: 1px solid var(--accent-cyan);
+            color: #fff;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 600;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+            display: none;
+            z-index: 1000;
+        }
+
+        /* Tối ưu chuyên biệt cho Mobile & iOS Safari */
+        @media (max-width: 640px) {
+            .hub-navbar {
+                display: flex;
+                flex-direction: column;
+                align-items: stretch;
+                padding: calc(6px + env(safe-area-inset-top, 0px)) 10px 6px 10px;
+                gap: 6px;
+            }
+            .hub-nav-top {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                width: 100%;
+            }
+            .hub-brand {
+                font-size: 14px;
+                gap: 5px;
+            }
+            .hub-badge {
+                font-size: 9px;
+                padding: 1px 5px;
+            }
+            .hub-controls-right {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+            .hub-btn-icon {
+                width: 32px;
+                height: 32px;
+                font-size: 13px;
+            }
+            .hub-tabs-scroll {
+                width: 100%;
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                overflow-x: auto;
+                scrollbar-width: none;
+                -webkit-overflow-scrolling: touch;
+                padding: 4px 0 2px 0;
+                border-top: 1px solid rgba(255, 255, 255, 0.07);
+            }
+            .hub-nav-pill {
+                padding: 6px 12px;
+                font-size: 12px;
+                border-radius: 8px;
+                flex-shrink: 0;
+                white-space: nowrap;
+            }
+            .hub-overview-container {
+                padding: 10px 8px;
+                gap: 10px;
+            }
+            .hub-stats-row {
+                grid-template-columns: repeat(3, 1fr);
+                gap: 6px;
+            }
+            .hub-stat-card {
+                padding: 8px 10px;
+                border-radius: 10px;
+            }
+            .hub-stat-label {
+                font-size: 9px;
+            }
+            .hub-stat-num {
+                font-size: 16px;
+            }
+            .hub-stat-card > div:last-child {
+                display: none;
+            }
+            .hub-cards-grid {
+                grid-template-columns: 1fr;
+                gap: 12px;
+            }
+            .hub-screen-box {
+                height: auto;
+            }
+            .hub-detail-bar {
+                padding: 6px 8px;
+                height: 42px;
+                gap: 4px;
+            }
+            .hub-back-btn {
+                padding: 4px 8px;
+                font-size: 11px;
+                gap: 3px;
+            }
+            #detailTitle {
+                font-size: 12px;
+                max-width: 45%;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="hub-navbar">
+        <div class="hub-nav-top">
+            <div class="hub-brand">
+                <span>⚔️ TS ORIGIN</span>
+            </div>
+            <div class="hub-controls-right">
+                <button class="hub-btn-icon" title="Khởi chạy thêm Tab mới" onclick="launchNextTab()" style="color: var(--accent-cyan); font-weight: bold; font-size: 16px;">➕</button>
+                <button class="hub-btn-icon" title="Làm mới trạng thái" onclick="refreshHubData()">🔄</button>
+                <button class="hub-btn-icon" title="Toàn màn hình" onclick="toggleFullScreen()">⛶</button>
+            </div>
+        </div>
+        <div class="hub-tabs-scroll" id="navTabsContainer">
+            <button class="hub-nav-pill active" id="pillOverview" onclick="switchView('overview')">
+                <span>📊</span><span>Tổng Quan</span>
+            </button>
+            <!-- Dynamic Tab Pills -->
+        </div>
+    </div>
+
+    <div class="hub-content">
+        <!-- VIEW 1: OVERVIEW DASHBOARD -->
+        <div class="hub-view active" id="viewOverview">
+            <div class="hub-overview-container">
+                <div class="hub-stats-row">
+                    <div class="hub-stat-card">
+                        <div>
+                            <div class="hub-stat-label">Tổng Tab Kết Nối</div>
+                            <div class="hub-stat-num" id="statTotalTabs">0</div>
+                        </div>
+                        <div style="font-size: 24px;">🖥️</div>
+                    </div>
+                    <div class="hub-stat-card">
+                        <div>
+                            <div class="hub-stat-label">Đang Chạy Auto</div>
+                            <div class="hub-stat-num" style="color: var(--accent-green);" id="statRunningTabs">0</div>
+                        </div>
+                        <div style="font-size: 24px;">⚡</div>
+                    </div>
+                    <div class="hub-stat-card">
+                        <div>
+                            <div class="hub-stat-label">Đang Rảnh / Chờ</div>
+                            <div class="hub-stat-num" style="color: var(--text-muted);" id="statStandbyTabs">0</div>
+                        </div>
+                        <div style="font-size: 24px;">💤</div>
+                    </div>
+                </div>
+
+                <div class="hub-cards-grid" id="tabCardsGrid">
+                    <div class="hub-empty-state">
+                        <h3>Đang quét các Tab LDPlayer...</h3>
+                        <p>Vui lòng mở Tool để hệ thống tự động nhận diện và đồng bộ các Tab.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- VIEW 2: DEDICATED TAB VIEW -->
+        <div class="hub-view" id="viewTabDetail">
+            <div class="hub-detail-bar">
+                <button class="hub-back-btn" onclick="switchView('overview')">← Quay Lại Tổng Quan</button>
+                <div id="detailTitle" style="font-weight: 700; color: #fff;">🖥️ Tab Detail</div>
+                <a id="btnNewWindow" href="" target="_blank" class="hub-back-btn" style="text-decoration: none;">Mở Tab Riêng ↗</a>
+            </div>
+            <div class="hub-iframe-wrapper">
+                <iframe id="tabFrame" class="hub-iframe" src=""></iframe>
+            </div>
+        </div>
+    </div>
+
+    <div id="hubToast"></div>
+
+    <script>
+        let hubData = { tabs: [] };
+        let activeView = 'overview';
+        let activeTabPort = null;
+        let pollTimer = null;
+
+        function showToast(msg) {
+            const t = document.getElementById('hubToast');
+            if (!t) return;
+            t.innerText = msg;
+            t.style.display = 'block';
+            setTimeout(() => { t.style.display = 'none'; }, 2500);
+        }
+
+        function toggleFullScreen() {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen().catch(() => {});
+            } else {
+                document.exitFullscreen().catch(() => {});
+            }
+        }
+
+        function switchView(view, port) {
+            activeView = view;
+            const viewOverview = document.getElementById('viewOverview');
+            const viewTabDetail = document.getElementById('viewTabDetail');
+            const pillOverview = document.getElementById('pillOverview');
+
+            document.querySelectorAll('.hub-nav-pill').forEach(p => p.classList.remove('active'));
+
+            if (view === 'overview') {
+                viewOverview.classList.add('active');
+                viewTabDetail.classList.remove('active');
+                pillOverview.classList.add('active');
+                activeTabPort = null;
+                // Giải phóng iframe khi quay về trang tổng quan để dừng stream ngầm
+                const iframe = document.getElementById('tabFrame');
+                if (iframe) {
+                    iframe.src = 'about:blank';
+                    iframe.removeAttribute('data-port');
+                }
+            } else if (view === 'tab' && port) {
+                activeTabPort = port;
+                viewOverview.classList.remove('active');
+                viewTabDetail.classList.add('active');
+
+                const activePill = document.getElementById('pill_tab_' + port);
+                if (activePill) {
+                    activePill.classList.add('active');
+                    try { activePill.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' }); } catch (e) {}
+                }
+
+                const iframe = document.getElementById('tabFrame');
+                const targetSrc = '/proxy/' + port + '/?embed=1';
+                if (iframe.getAttribute('data-port') !== String(port)) {
+                    iframe.src = targetSrc;
+                    iframe.setAttribute('data-port', String(port));
+                }
+
+                const curTab = (hubData.tabs || []).find(t => t.port === port);
+                const tabTitle = curTab ? (curTab.selected_tab || 'Tab') : 'Tab';
+                document.getElementById('detailTitle').innerText = `🖥️ ${tabTitle}`;
+                document.getElementById('btnNewWindow').href = `/proxy/${port}/`;
+            }
+        }
+
+        async function refreshHubData() {
+            try {
+                const res = await fetch('/api/hub/status');
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                hubData = await res.json();
+                renderHubUI(hubData);
+            } catch (e) {
+                console.warn('Lỗi quét Hub:', e);
+            }
+        }
+
+        function renderHubUI(data) {
+            const tabs = data.tabs || [];
+            document.getElementById('statTotalTabs').innerText = tabs.length;
+            const runningCount = tabs.filter(t => t.is_running).length;
+            document.getElementById('statRunningTabs').innerText = runningCount;
+            document.getElementById('statStandbyTabs').innerText = tabs.length - runningCount;
+
+            // 1. Cập nhật Nav Pills mượt mà (Không xóa/tạo lại nếu đã có)
+            const navContainer = document.getElementById('navTabsContainer');
+            const existingPills = navContainer.querySelectorAll('.hub-nav-pill:not(#pillOverview)');
+            existingPills.forEach(p => {
+                const pPort = parseInt(p.getAttribute('data-port'));
+                if (!tabs.some(t => t.port === pPort)) {
+                    p.remove();
+                }
+            });
+
+            tabs.forEach(t => {
+                let pill = document.getElementById('pill_tab_' + t.port);
+                const dotClass = t.is_running ? 'dot running' : 'dot';
+                const pillLabel = t.selected_tab || 'Tab';
+                if (!pill) {
+                    pill = document.createElement('button');
+                    pill.className = 'hub-nav-pill' + (activeTabPort === t.port ? ' active' : '');
+                    pill.id = 'pill_tab_' + t.port;
+                    pill.setAttribute('data-port', t.port);
+                    pill.onclick = () => switchView('tab', t.port);
+                    navContainer.appendChild(pill);
+                } else {
+                    pill.className = 'hub-nav-pill' + (activeTabPort === t.port ? ' active' : '');
+                }
+                pill.innerHTML = `<span class="${dotClass}"></span><span>${pillLabel}</span>`;
+            });
+
+            // 2. Cập nhật Cards Lưới Tổng Quan
+            const grid = document.getElementById('tabCardsGrid');
+            if (tabs.length === 0) {
+                grid.innerHTML = `
+                    <div class="hub-empty-state">
+                        <h3>Chưa phát hiện Tab LDPlayer nào đang kết nối</h3>
+                        <p>Vui lòng mở ứng dụng TS Origin Control V3 trên máy tính để tự động kết nối.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            const emptyState = grid.querySelector('.hub-empty-state');
+            if (emptyState) emptyState.remove();
+
+            // Xóa thẻ của tab đã đóng
+            const existingCards = grid.querySelectorAll('.hub-tab-card');
+            existingCards.forEach(card => {
+                const cPort = parseInt(card.getAttribute('data-port'));
+                if (!tabs.some(t => t.port === cPort)) {
+                    card.remove();
+                }
+            });
+
+            // Cập nhật hoặc tạo mới từng thẻ tab
+            tabs.forEach(t => {
+                const isRun = t.is_running;
+                const isMissingTab = !t.selected_tab || t.selected_tab.includes('Không có Tab LD') || t.selected_tab.includes('Chưa có Tab LD');
+
+                let card = document.getElementById('card_tab_' + t.port);
+                if (!card) {
+                    card = document.createElement('div');
+                    card.className = 'hub-tab-card';
+                    card.id = 'card_tab_' + t.port;
+                    card.setAttribute('data-port', t.port);
+                    card.innerHTML = `
+                        <div class="hub-card-header">
+                            <div class="hub-card-title">
+                                <span class="tab-title-text">📱 ${t.selected_tab || 'LDPlayer'}</span>
+                            </div>
+                            <span class="status-tag-box"></span>
+                        </div>
+                        <div class="hub-screen-box" onclick="switchView('tab', ${t.port})">
+                            <img class="hub-screen-img" id="thumb_${t.port}" alt="LDPlayer Screen" src="/proxy/${t.port}/api/screenshot?q=2s">
+                            <div class="hub-screen-overlay">🔍 Bấm để vào điều khiển trực tiếp</div>
+                        </div>
+                        <div class="hub-card-actions">
+                            <button class="hub-btn hub-btn-view" onclick="switchView('tab', ${t.port})">🔍 Vào Chi Tiết</button>
+                        </div>
+                    `;
+                    grid.appendChild(card);
+                }
+
+                // Cập nhật text động trong card (Zero flickering)
+                const titleEl = card.querySelector('.tab-title-text');
+                if (titleEl) titleEl.innerText = isMissingTab ? `⚠️ ${t.selected_tab || 'Chưa có Tab'}` : `📱 ${t.selected_tab || 'LDPlayer'}`;
+
+                const tagBox = card.querySelector('.status-tag-box');
+                if (tagBox) {
+                    if (isMissingTab) {
+                        tagBox.innerHTML = '<span class="hub-status-tag" style="background:rgba(239,68,68,0.2);color:#ef4444;border:1px solid rgba(239,68,68,0.4);"><span class="dot" style="background:#ef4444;"></span> THIẾU TAB LD</span>';
+                    } else {
+                        tagBox.innerHTML = isRun
+                            ? '<span class="hub-status-tag running"><span class="dot running"></span> ĐANG AUTO</span>'
+                            : '<span class="hub-status-tag standby"><span class="dot"></span> ĐANG NGHỈ</span>';
+                    }
+                }
+
+                // Cập nhật hình ảnh thumbnail mượt mà qua Image preload (chỉ khi đang ở Overview)
+                if (!activeTabPort) {
+                    const thumbImg = document.getElementById('thumb_' + t.port);
+                    if (thumbImg && !thumbImg._busy) {
+                        thumbImg._busy = true;
+                        const nextThumb = new Image();
+                        nextThumb.onload = () => {
+                            thumbImg.src = nextThumb.src;
+                            thumbImg._busy = false;
+                        };
+                        nextThumb.onerror = () => {
+                            thumbImg._busy = false;
+                        };
+                        nextThumb.src = `/proxy/${t.port}/api/screenshot?q=2s&_t=${Date.now()}`;
+                    }
+                }
+            });
+        }
+
+
+        async function launchNextTab() {
+            if (!confirm('Khởi chạy thêm 1 cửa sổ Tool cho Tab LDPlayer tiếp theo?')) return;
+            try {
+                showToast('Đang gửi lệnh mở Tab mới...');
+                const res = await fetch('/api/hub/launch_tab', { method: 'POST' });
+                const data = await res.json();
+                showToast(data.msg || 'Đã khởi chạy!');
+                setTimeout(refreshHubData, 2500);
+            } catch (e) {
+                showToast('Không thể gửi lệnh!');
+            }
+        }
+
+        // Bắt đầu chu kỳ quét định kỳ
+        refreshHubData();
+        pollTimer = setInterval(refreshHubData, 2500);
+    </script>
+</body>
+</html>"""
+
 
 
 def stop_active_tunnel(app):
@@ -4049,8 +4944,10 @@ def start_cloudflare_tunnel(app):
     def _tunnel_worker():
         stop_active_tunnel(app)
         setattr(app, 'stop_tunnel_requested', False)
-        port = getattr(app, 'web_port', 8082)
-        app.log_info(f"🌐 [4G / ONLINE] Đang khởi tạo đường truyền HTTPS qua cổng {port}...")
+        is_hub = getattr(app, 'is_hub_master', False)
+        port = 8080 if is_hub else getattr(app, 'web_port', 8081)
+        hub_label = " (Trang Tổng Quản 8080)" if is_hub else f" (Tab Riêng {port})"
+        app.log_info(f"🌐 [4G / ONLINE] Đang khởi tạo đường truyền HTTPS qua cổng {port}{hub_label}...")
 
         creation_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
 
@@ -4060,7 +4957,9 @@ def start_cloudflare_tunnel(app):
         ngrok_token = ""
         ngrok_domain = ""
         try:
-            cfg_path = os.path.join(get_app_dir(), "config.json")
+            cfg_path = app._get_config_path() if hasattr(app, '_get_config_path') else os.path.join(get_app_dir(), "config.json")
+            if not os.path.exists(cfg_path):
+                cfg_path = os.path.join(get_app_dir(), "config.json")
             if os.path.exists(cfg_path):
                 with open(cfg_path, "r", encoding="utf-8") as f:
                     cfg_data = json.load(f)
