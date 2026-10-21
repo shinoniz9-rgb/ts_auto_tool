@@ -526,15 +526,33 @@ class ToolBlueStacksGUI(ctk.CTk):
                 pass
             self.after(0, self.log_info, "🔌 [ADB] Kết nối ADB Server ổn định (hoàn toàn cách ly, không ảnh hưởng các tool khác).")
 
-            # 3. Kết nối chủ động vào các cổng BlueStacks phổ biến
-            default_bs_ports = [5555, 5565, 5575, 5585, 5595, 5605, 5615, 5625, 5635, 5645, 5655]
+            # 3. Kết nối chủ động vào các cổng BlueStacks (Ưu tiên đọc file cấu hình bluestacks.conf)
             conf_p = self._find_bluestacks_conf()
             conf_insts = self._parse_bluestacks_conf(conf_p) if conf_p else {}
+            bs_ports = set()
             for inst in conf_insts.values():
                 p = inst.get("port")
                 if p and p.isdigit():
-                    default_bs_ports.append(int(p))
-            for port in sorted(set(default_bs_ports)):
+                    bs_ports.add(int(p))
+            if not bs_ports:
+                bs_ports = set([5555, 5565, 5575, 5585, 5595, 5605, 5615, 5625, 5635, 5645, 5655])
+
+            # Tránh kết nối vào các cổng ADB thuộc về LDPlayer đang chạy (ví dụ emulator-5554 -> cổng 5555)
+            try:
+                res_devs = subprocess.run([adb_path, "devices"], timeout=1.5, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, creationflags=creation_flags)
+                if res_devs and res_devs.stdout:
+                    for line in res_devs.stdout.splitlines()[1:]:
+                        parts = line.strip().split()
+                        if parts and parts[0].startswith("emulator-"):
+                            try:
+                                c_p = int(parts[0].split("-")[1])
+                                bs_ports.discard(c_p + 1)
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
+            for port in sorted(bs_ports):
                 try:
                     subprocess.run([adb_path, "connect", f"127.0.0.1:{port}"], timeout=0.6, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creation_flags)
                 except Exception:
@@ -1654,9 +1672,13 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
 
         # 3. Khớp theo dải cổng chuẩn của BlueStacks (5555: Tab 1, 5565: Tab 2, 5575: Tab 3...)
         if port_num is not None and 5550 <= port_num <= 5680:
-            tab_num = 1 if port_num == 5555 else ((port_num - 5555) // 10 + 1 if (port_num - 5555) % 10 == 0 else 0)
-            lbl = f"BlueStacks Tab {tab_num} ({port_num})" if tab_num > 0 else f"BlueStacks ({port_num})"
-            return True, lbl, port_num
+            if port_num == 5555 and dev_id in ("127.0.0.1:5555", "localhost:5555"):
+                # Cổng 5555 có thể là LDPlayer Tab 0, chuyển tiếp xuống bước 4 để xác thực qua getprop
+                pass
+            else:
+                tab_num = 1 if port_num == 5555 else ((port_num - 5555) // 10 + 1 if (port_num - 5555) % 10 == 0 else 0)
+                lbl = f"BlueStacks Tab {tab_num} ({port_num})" if tab_num > 0 else f"BlueStacks ({port_num})"
+                return True, lbl, port_num
 
         # 4. Kiểm tra sâu qua getprop nếu dùng cổng tùy biến
         try:
@@ -3985,14 +4007,31 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             conf_path = self._find_bluestacks_conf()
             conf_instances = self._parse_bluestacks_conf(conf_path) if conf_path else {}
 
-            # 1. Kết nối nhanh tới các cổng BlueStacks
-            ports_to_connect = set([5555, 5565, 5575, 5585, 5595, 5605, 5615, 5625, 5635, 5645, 5655])
+            # 1. Kết nối nhanh tới các cổng BlueStacks (Ưu tiên đọc file cấu hình bluestacks.conf)
+            conf_ports = set()
             for inst in conf_instances.values():
                 p = inst.get("port")
                 if p and p.isdigit():
-                    ports_to_connect.add(int(p))
+                    conf_ports.add(int(p))
+            ports_to_connect = conf_ports if conf_ports else set([5555, 5565, 5575, 5585, 5595, 5605, 5615, 5625, 5635, 5645, 5655])
 
             cflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+
+            # Lọc bỏ các cổng ADB thuộc về LDPlayer đang chạy (ví dụ emulator-5554 -> cổng 5555)
+            try:
+                chk_devs = subprocess.run([adb_path, "devices"], timeout=1.5, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, creationflags=cflags)
+                if chk_devs and chk_devs.stdout:
+                    for line in chk_devs.stdout.splitlines()[1:]:
+                        parts = line.strip().split()
+                        if parts and parts[0].startswith("emulator-"):
+                            try:
+                                c_p = int(parts[0].split("-")[1])
+                                ports_to_connect.discard(c_p + 1)
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
             for port in sorted(ports_to_connect):
                 try:
                     subprocess.run([adb_path, "connect", f"127.0.0.1:{port}"], timeout=0.6, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=cflags)

@@ -356,11 +356,35 @@ class ToolLDPlayerGUI(ctk.CTk):
         which_adb = shutil.which("adb")
         return which_adb if which_adb else "adb.exe"
 
+    def _auto_clean_duplicate_adb_endpoints(self):
+        """Tự động phát hiện và ngắt kết nối các cổng IP trùng lặp (127.0.0.1:5555...) khi đã có emulator-XXXX chính thức của LDPlayer"""
+        try:
+            adb_path = self._get_adb_path()
+            if not os.path.exists(adb_path):
+                return
+            creation_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            res = subprocess.run([adb_path, "devices"], timeout=2.5, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, creationflags=creation_flags)
+            if res and res.stdout:
+                lines = [line.strip() for line in res.stdout.splitlines() if line.strip()]
+                active_devices = [line.split()[0] for line in lines[1:] if len(line.split()) >= 2 and line.split()[1].lower() == "device"]
+                for dev in active_devices:
+                    if dev.startswith("emulator-"):
+                        try:
+                            c_port = int(dev.split("-")[1])
+                            dup_ip = f"127.0.0.1:{c_port + 1}"
+                            if dup_ip in active_devices:
+                                subprocess.run([adb_path, "disconnect", dup_ip], timeout=1.5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creation_flags)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
     def _cleanup_adb_sessions(self):
-        """Khởi tạo ADB server an toàn đa tool:
+        """Khởi tạo ADB server an toàn đa tool & Tự động giải phóng cổng IP trùng lặp:
         1. Đảm bảo ADB server đang chạy ngầm bằng start-server (an toàn, là no-op nếu server đã chạy).
         2. TUYỆT ĐỐI KHÔNG kill-server hoặc taskkill adb.exe để bảo vệ các Tab khác đang chạy song song.
         3. TUYỆT ĐỐI KHÔNG gọi adb reconnect offline toàn cục làm đứt kết nối các tab khác.
+        4. Tự động ngắt kết nối các cổng IP trùng lặp (127.0.0.1:5555, 5557...) nếu phát hiện có emulator-XXXX tương ứng.
         """
         try:
             adb_path = self._get_adb_path()
@@ -373,6 +397,9 @@ class ToolLDPlayerGUI(ctk.CTk):
                 subprocess.run([adb_path, "start-server"], timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creation_flags)
             except Exception:
                 pass
+
+            # Tự động dọn dẹp các kết nối IP trùng lặp còn sót lại từ trước
+            self._auto_clean_duplicate_adb_endpoints()
         except Exception:
             pass
 
@@ -3794,12 +3821,10 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
 
                 if os.path.exists(adb_path):
                     port_5554 = 5554 + (tab_idx * 2)
-                    port_5555 = 5555 + (tab_idx * 2)
 
-                    # Ưu tiên emulator-XXXX chính chủ của LDPlayer, chỉ fallback 127.0.0.1:XXXX nếu cần
+                    # Kênh ADB socket chính thức trực tiếp của LDPlayer
                     candidate_devices = [
-                        f"emulator-{port_5554}",
-                        f"127.0.0.1:{port_5555}"
+                        f"emulator-{port_5554}"
                     ]
 
                     for device_id in candidate_devices:
@@ -3878,6 +3903,9 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                         name = parts[1].strip()
                         new_tabs.append(name)
                         dict_temp[name] = idx
+
+            # Tự động dọn dẹp các cổng IP trùng lặp (127.0.0.1:5555...) nếu có
+            self._auto_clean_duplicate_adb_endpoints()
 
             self.after(0, self._update_ui_ld_scan_result, new_tabs, None, dict_temp)
 
@@ -8274,10 +8302,8 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             except Exception:
                 tab_num = 0
             port_5554 = 5554 + (tab_num * 2)
-            port_5555 = 5555 + (tab_num * 2)
             candidate_devices = [
-                f"emulator-{port_5554}",
-                f"127.0.0.1:{port_5555}",
+                f"emulator-{port_5554}"
             ]
 
             if not hasattr(self, '_active_adb_device'):

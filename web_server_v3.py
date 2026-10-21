@@ -95,8 +95,7 @@ class LDStreamManager:
         tab_num = int(tab_num_str) if tab_num_str.isdigit() else 0
 
         candidate_devices = [
-            f"emulator-{5554 + tab_num * 2}",
-            f"127.0.0.1:{5555 + tab_num * 2}"
+            f"emulator-{5554 + tab_num * 2}"
         ]
 
         active_dev = self._active_devs.get(tab_key, candidate_devices[0])
@@ -193,17 +192,6 @@ class LDStreamManager:
                 sleep_sec = 0.5 if req_mode == "0.5s" else (2.0 if req_mode == "2s" else 1.0)
                 time.sleep(sleep_sec)
             else:
-                # Tự động kết nối lại cổng giả lập này nếu bị offline hoặc rớt kết nối
-                try:
-                    subprocess.run(
-                        [adb_path, "connect", f"127.0.0.1:{5555 + tab_num * 2}"],
-                        timeout=1.5,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        creationflags=creation_flags
-                    )
-                except Exception:
-                    pass
                 time.sleep(0.5)
 
 
