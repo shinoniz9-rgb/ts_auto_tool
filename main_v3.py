@@ -7881,8 +7881,13 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
     def _on_nhan_thu_toggled(self):
         """Xử lý khi người dùng bật / tắt ô tích Nhận Thư"""
         is_enabled = bool(self.var_nhan_thu.get()) if hasattr(self, 'var_nhan_thu') else False
-        moc_gio = self.combo_nhan_thu_time.get() if hasattr(self, 'combo_nhan_thu_time') else "Tất Cả"
+        moc_gio = (self.combo_nhan_thu_time.get() if hasattr(self, 'combo_nhan_thu_time') else "Tất Cả").strip()
         if is_enabled:
+            # 1. Reset cờ dừng tổng để đảm bảo tiến trình nhận thư không bị chặn nếu trước đó từng bấm Stop/Dừng
+            self._reset_stop_flags()
+            # 2. Đánh thức luồng ngầm ngay lập tức nếu đang ngủ chờ
+            if hasattr(self, '_stop_mail_sleep'):
+                self._stop_mail_sleep.set()
             if hasattr(self, '_event_nhan_thu'):
                 self._event_nhan_thu.set()
             self.after(0, self.log_info, f"📬 [CARD NGÀY] Đã bật Tự Động Nhận Thư (Mốc: {moc_gio}) - Hệ thống sẽ tự động thực hiện khi đến giờ.")
@@ -7910,9 +7915,8 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             self.after(0, self.log_info, "ℹ️ [CARD NGÀY] Tiến trình Nhận Thư đang chạy, vui lòng chờ...")
             return False
 
-        if self.stop_requested:
-            return False
-
+        # Đảm bảo cờ dừng đã được giải phóng khi bắt đầu nhận thư
+        self._reset_stop_flags()
         self._is_nhan_thu_running = True
 
         # Kiểm tra nếu Nhận Đội đang chạy thì phát tín hiệu mượn quyền điều khiển màn hình
@@ -8076,18 +8080,21 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         is_hen_gio_waiting = hasattr(self, 'var_hen_gio') and self.var_hen_gio.get() and not getattr(self, '_is_hen_gio_running', False)
 
         if not is_hen_gio_waiting:
+            # Chỉ coi là bận khi luồng điều phối Card A/B/C/D thực sự đang chạy
             if getattr(self, '_card_AB_coordinator_running', False):
-                return True, "Điều phối Boss TG / Phụ Bản"
-            if hasattr(self, 'var_switch_A') and self.var_switch_A.get():
-                return True, "Card Boss Thế Giới (A)"
-            if hasattr(self, 'var_switch_B') and self.var_switch_B.get():
-                return True, "Card Phụ Bản Đơn / Đội (B)"
-            if hasattr(self, 'var_switch_C') and self.var_switch_C.get():
-                return True, "Card Dị Giới (C)"
-            if hasattr(self, 'var_switch_D') and self.var_switch_D.get():
-                is_nhan_doi_only = hasattr(self, 'var_D_nhan_doi') and self.var_D_nhan_doi.get()
-                if not is_nhan_doi_only:
+                if hasattr(self, 'var_switch_D') and self.var_switch_D.get() and hasattr(self, 'var_D_nhan_doi') and self.var_D_nhan_doi.get():
+                    # Nhận Đội đang chạy 24/24 có cơ chế nhường quyền _check_and_wait_for_mail_preemption ➔ Không chặn Nhận Thư
+                    pass
+                elif hasattr(self, 'var_switch_A') and self.var_switch_A.get():
+                    return True, "Card Boss Thế Giới (A)"
+                elif hasattr(self, 'var_switch_B') and self.var_switch_B.get():
+                    return True, "Card Phụ Bản Đơn / Đội (B)"
+                elif hasattr(self, 'var_switch_C') and self.var_switch_C.get():
+                    return True, "Card Dị Giới (C)"
+                elif hasattr(self, 'var_switch_D') and self.var_switch_D.get():
                     return True, "Card 40 NPC / Nhị Kiều (D)"
+                else:
+                    return True, "Tiến trình điều phối Card"
 
         if hasattr(self, 'btn_enter_game'):
             try:
@@ -8118,16 +8125,17 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
 
                 now = datetime.now()
                 today_str = now.strftime("%Y-%m-%d")
-                selected_mode = self.combo_nhan_thu_time.get() if hasattr(self, 'combo_nhan_thu_time') else "Tất Cả"
+                selected_mode = (self.combo_nhan_thu_time.get() if hasattr(self, 'combo_nhan_thu_time') else "Tất Cả").strip()
+                is_all_mode = ("TẤT CẢ" in selected_mode.upper() or "TAT CA" in selected_mode.upper())
 
-                # 2. Xác định các mốc giờ 12H01, 18H01, 22H01 (khung giờ từ phút 01 đến phút 30)
+                # 2. Xác định các mốc giờ 12H01, 18H01, 22H01 (khung giờ từ phút 01 đến phút 55)
                 matched_slot = None
-                if 1 <= now.minute <= 30:
-                    if now.hour == 12 and (selected_mode in ["12H01", "Tất Cả"]):
+                if 1 <= now.minute <= 55:
+                    if now.hour == 12 and (is_all_mode or "12" in selected_mode):
                         matched_slot = "12H01"
-                    elif now.hour == 18 and (selected_mode in ["18H01", "Tất Cả"]):
+                    elif now.hour == 18 and (is_all_mode or "18" in selected_mode):
                         matched_slot = "18H01"
-                    elif now.hour == 22 and (selected_mode in ["22H01", "Tất Cả"]):
+                    elif now.hour == 22 and (is_all_mode or "22" in selected_mode):
                         matched_slot = "22H01"
 
                 if matched_slot is not None:
@@ -8141,8 +8149,9 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                                 self.after(0, self.log_info, f"⏳ [CARD NGÀY ({matched_slot})] Hoạt động '{busy_reason}' đang chạy dở ➔ Tạm hoãn nhận thư, sẽ tự động thực thi ngay khi hoàn thành...")
                         else:
                             last_logged_busy_slot = None
-                            if self.stop_requested or not getattr(self, 'var_nhan_thu', None) or not self.var_nhan_thu.get():
+                            if not getattr(self, 'var_nhan_thu', None) or not self.var_nhan_thu.get():
                                 continue
+                            self._reset_stop_flags()
                             self.after(0, self.log_info, f"⏰ [CARD NGÀY ({matched_slot})] Bắt đầu thực thi Tự Động Nhận Thư ({matched_slot})...")
 
                             dnconsole_path = self._get_dnconsole_path()
@@ -8151,7 +8160,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                             else:
                                 tab_name, tab_index = self._get_selected_ld_info()
                                 if tab_index is None:
-                                    tab_index = "0"
+                                    tab_index = getattr(self, 'assigned_tab_index', "0")
                                 success = self._execute_nhan_thu(dnconsole_path, str(tab_index), time_slot=matched_slot)
                                 if success:
                                     self._completed_mail_slots.add(slot_key)
@@ -8171,10 +8180,11 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                     self._completed_mail_slots = {s for s in self._completed_mail_slots if s.startswith(today_str)}
 
                 # 4. CHU KỲ NGHỈ THÔNG MINH 2 NHỊP (TRUE ZERO-CPU SLEEP via Event.wait)
-                # - Nhịp nhanh (3.0s): Khi đang trong khung giờ vàng (12h, 18h, 22h phút 01-30) và chưa nhận thư / đang chờ hết bận.
+                # - Nhịp nhanh (3.0s):
+                #   + Khi trong khung giờ vàng (12h, 18h, 22h phút 00-55) và mốc chưa nhận xong
+                #   + Hoặc khi sắp sang giờ mới (phút >= 59 của giờ 11, 17, 21) để đón chuẩn xác đầu giờ
                 # - Nhịp dài (60.0s): Khi ở ngoài khung giờ hoặc mốc đã nhận xong → ngủ OS-level, Zero CPU.
-                # Dùng Event.wait(timeout) thay for-loop để thread ngủ hoàn toàn, không poll liên tục.
-                is_active_window = (now.hour in [12, 18, 22]) and (1 <= now.minute <= 30)
+                is_active_window = (now.hour in [12, 18, 22]) and (0 <= now.minute <= 55)
                 current_slot_key = f"{today_str}_{matched_slot}" if matched_slot else None
                 slot_already_done = current_slot_key in self._completed_mail_slots if current_slot_key else False
 

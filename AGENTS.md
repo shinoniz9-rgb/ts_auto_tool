@@ -20,3 +20,11 @@
 ## 6. Không Tự Ý Chỉnh Sửa Công Cụ Thử Nghiệm
 - **Ngưng chỉnh sửa**: Tuyệt đối **KHÔNG ĐƯỢC TỰ Ý CHỈNH SỬA**, can thiệp hay thay đổi mã nguồn các file công cụ thử nghiệm (như `test_swipe_team.py`, `test_dpad.py` hoặc các file test khác), **CHỈ chỉnh sửa KHI CÓ YÊU CẦU CỤ THỂ TỪ NGƯỜI DÙNG**.
 
+## 7. Quy Tắc Riêng Cho Bản BlueStacks (`TS_Origin_Control_BlueStacks`)
+- **Loại bỏ Telegram & Ngrok (Tương tự bản `dist_share`)**: Phiên bản BlueStacks (`main_bluestacks.py`, `build_bluestacks.py`, `dist_bluestacks/`) **tuyệt đối không sử dụng thông báo Telegram và dịch vụ Ngrok**.
+  - Không copy và không chứa file `ngrok.exe` trong thư mục `dist_bluestacks/`.
+  - File cấu hình `dist_bluestacks/config.json` phải luôn giữ sạch sẽ tương tự bản `dist_share`: đặt `"enable_telegram": false`, loại bỏ hoàn toàn các trường token/chat_id Telegram và token/domain Ngrok.
+  - Hàm gửi thông báo Telegram (`send_telegram_alert`) trong `main_bluestacks.py` luôn là hàm rỗng `return`, không chạy luồng nền và không gửi bất kỳ request mạng nào.
+- **Dọn dẹp rác sau đóng gói**: Sau khi chạy `build_bluestacks.py`, các file/thư mục tạm phát sinh từ quá trình build (bao gồm thư mục `build_bluestacks/`, file spec `TS_Origin_Control_BlueStacks.spec`, và cache `__pycache__/`) **bắt buộc phải được xóa bỏ sạch sẽ 100%**, chỉ giữ lại file thực thi và tài nguyên cần thiết trong `dist_bluestacks/`.
+
+

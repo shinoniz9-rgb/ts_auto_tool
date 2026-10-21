@@ -113,49 +113,60 @@ class LDStreamManager:
                 continue
 
             frame_bytes = None
+            if getattr(app, 'is_bluestacks', False) and hasattr(app, '_capture_screen_fast'):
+                try:
+                    img = app._capture_screen_fast(None, tab_key, max_cache_age=0.5)
+                    if img is not None and getattr(img, 'shape', None):
+                        ok, buf = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
+                        if ok:
+                            frame_bytes = buf.tobytes()
+                except Exception:
+                    pass
+
             devs = [active_dev] + [d for d in candidate_devices if d != active_dev]
 
             # 1. Trích xuất raw RGBA framebuffer từ Android bằng adb exec-out screencap (Zero Disk I/O)
-            for dev in devs:
-                p = None
-                try:
-                    p = subprocess.Popen(
-                        [adb_path, "-s", dev, "exec-out", "screencap"],
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.DEVNULL,
-                        creationflags=creation_flags
-                    )
-                    header = p.stdout.read(16)
-                    if len(header) >= 16:
-                        w = int.from_bytes(header[0:4], "little")
-                        h = int.from_bytes(header[4:8], "little")
-                        if 100 < w <= 3840 and 100 < h <= 3840:
-                            raw_len = w * h * 4
-                            raw_bytes = p.stdout.read(raw_len)
-                            if len(raw_bytes) == raw_len:
-                                arr = np.frombuffer(raw_bytes, dtype=np.uint8).reshape((h, w, 4))
-                                bgr = cv2.cvtColor(arr, cv2.COLOR_RGBA2BGR)
-                                if w > 1280 or h > 720:
-                                    bgr = cv2.resize(bgr, (1280, 720), interpolation=cv2.INTER_LINEAR)
-                                ok_jpg, buf_jpg = cv2.imencode('.jpg', bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
-                                if ok_jpg:
-                                    frame_bytes = buf_jpg.tobytes()
-                                    self._active_devs[tab_key] = dev
-                                    active_dev = dev
-                                    break
-                except Exception:
-                    pass
-                finally:
-                    if p:
-                        try:
-                            if p.stdout:
-                                p.stdout.close()
-                        except Exception:
-                            pass
-                        try:
-                            p.kill()
-                        except Exception:
-                            pass
+            if frame_bytes is None:
+                for dev in devs:
+                    p = None
+                    try:
+                        p = subprocess.Popen(
+                            [adb_path, "-s", dev, "exec-out", "screencap"],
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL,
+                            creationflags=creation_flags
+                        )
+                        header = p.stdout.read(16)
+                        if len(header) >= 16:
+                            w = int.from_bytes(header[0:4], "little")
+                            h = int.from_bytes(header[4:8], "little")
+                            if 100 < w <= 3840 and 100 < h <= 3840:
+                                raw_len = w * h * 4
+                                raw_bytes = p.stdout.read(raw_len)
+                                if len(raw_bytes) == raw_len:
+                                    arr = np.frombuffer(raw_bytes, dtype=np.uint8).reshape((h, w, 4))
+                                    bgr = cv2.cvtColor(arr, cv2.COLOR_RGBA2BGR)
+                                    if w > 1280 or h > 720:
+                                        bgr = cv2.resize(bgr, (1280, 720), interpolation=cv2.INTER_LINEAR)
+                                    ok_jpg, buf_jpg = cv2.imencode('.jpg', bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
+                                    if ok_jpg:
+                                        frame_bytes = buf_jpg.tobytes()
+                                        self._active_devs[tab_key] = dev
+                                        active_dev = dev
+                                        break
+                    except Exception:
+                        pass
+                    finally:
+                        if p:
+                            try:
+                                if p.stdout:
+                                    p.stdout.close()
+                            except Exception:
+                                pass
+                            try:
+                                p.kill()
+                            except Exception:
+                                pass
 
             # 2. Dự phòng qua cơ chế cache in-memory của tool nếu có
             if frame_bytes is None and hasattr(app, '_capture_screen_fast'):
@@ -3534,9 +3545,11 @@ class ToolWebRequestHandler(BaseHTTPRequestHandler):
                 msg = "🚪 Đang đóng game về màn hình chính LDPlayer..."
 
             elif action == "nhan_thu":
+                if hasattr(app, '_reset_stop_flags'):
+                    app._reset_stop_flags()
                 tab_name, tab_index = app._get_selected_ld_info() if hasattr(app, '_get_selected_ld_info') else (None, None)
                 if tab_index is None:
-                    tab_index = "0"
+                    tab_index = getattr(app, 'assigned_tab_index', "0")
                 dnconsole_path = app._get_dnconsole_path() if hasattr(app, '_get_dnconsole_path') else None
                 if not dnconsole_path:
                     dnconsole_path = os.path.join(app.ld_path, "ldconsole.exe")
@@ -3663,7 +3676,9 @@ class ToolWebRequestHandler(BaseHTTPRequestHandler):
                         if c_name in ["E_quan_su", "combo_E_quan_su"] and hasattr(app, '_on_combo_quan_su_changed'):
                             app._on_combo_quan_su_changed()
                         elif c_name in ["nhan_thu_time", "combo_nhan_thu_time"]:
-                            if hasattr(app, '_on_nhan_thu_toggled'):
+                            if hasattr(app, '_on_nhan_thu_combo_changed'):
+                                app._on_nhan_thu_combo_changed(c_val)
+                            elif hasattr(app, '_on_nhan_thu_toggled'):
                                 app._on_nhan_thu_toggled()
                             else:
                                 app.save_config()

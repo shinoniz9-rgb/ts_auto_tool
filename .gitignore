@@ -1,5 +1,10 @@
 __pycache__/
 dist/
 dist_share/
+dist_bluestacks/
+build_bluestacks/
+build_v3/
+build/
 .github_token
 _update_temp/
+

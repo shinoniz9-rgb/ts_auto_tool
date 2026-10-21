@@ -25,17 +25,53 @@ import subprocess
 import threading
 from version import APP_VERSION, GITHUB_REPO
 
+if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 
-def _parse_sha256_from_body(body: str) -> str:
+
+def _parse_sha256_from_body(body: str, target_name: str = None) -> str:
     """[C2] Trích xuất SHA256 checksum đã nhúng trong release body bởi publish_release.py."""
-    m = re.search(r'\*\*SHA256\*\*:\s*`([a-f0-9]{64})`', body or "")
+    body_str = body or ""
+    if target_name:
+        # 1. Tìm theo tên đầy đủ (ví dụ: **SHA256 (TS_Origin_Control_BlueStacks.exe)**: `...`)
+        p1 = r'\*\*SHA256\s*\([^)]*' + re.escape(target_name) + r'[^)]*\)\*\*:\s*`([a-f0-9]{64})`'
+        m1 = re.search(p1, body_str, re.IGNORECASE)
+        if m1:
+            return m1.group(1)
+        # 2. Tìm theo tên gốc không đuôi (ví dụ: **SHA256 (TS_Origin_Control_BlueStacks)**: `...`)
+        base_name = os.path.splitext(target_name)[0]
+        p2 = r'\*\*SHA256\s*\([^)]*' + re.escape(base_name) + r'[^)]*\)\*\*:\s*`([a-f0-9]{64})`'
+        m2 = re.search(p2, body_str, re.IGNORECASE)
+        if m2:
+            return m2.group(1)
+    # 3. Fallback theo chuẩn SHA256 chung
+    m = re.search(r'\*\*SHA256\*\*:\s*`([a-f0-9]{64})`', body_str)
     return m.group(1) if m else None
 
 def get_app_dir():
-    """Lấy đường dẫn thư mục thực tế chứa file .exe (hoặc script main_v3.py)."""
+    """Lấy đường dẫn thư mục thực tế chứa file .exe (hoặc script)."""
     if getattr(sys, 'frozen', False):
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
+
+def get_current_exe_name(app=None) -> str:
+    """
+    Xác định tên file thực thi hiện tại:
+    - Nếu app là BlueStacks hoặc exe là TS_Origin_Control_BlueStacks.exe -> trả về TS_Origin_Control_BlueStacks.exe
+    - Mặc định: TS_Origin_Control_V3.exe
+    """
+    if app and getattr(app, 'is_bluestacks', False):
+        return "TS_Origin_Control_BlueStacks.exe"
+    if getattr(sys, 'frozen', False):
+        exe_name = os.path.basename(sys.executable)
+        if "bluestacks" in exe_name.lower():
+            return "TS_Origin_Control_BlueStacks.exe"
+        if exe_name.lower().endswith(".exe"):
+            return exe_name
+    return "TS_Origin_Control_V3.exe"
 
 def parse_version_tuple(ver_str):
     """Chuyển chuỗi version 'v3.1.2' hoặc '3.1.2' thành tuple số (3, 1, 2) để so sánh."""
@@ -46,12 +82,14 @@ def is_newer_version(remote_ver, local_ver):
     """Kiểm tra remote_ver có lớn hơn local_ver hay không."""
     return parse_version_tuple(remote_ver) > parse_version_tuple(local_ver)
 
-def check_for_updates(current_version=None):
+def check_for_updates(current_version=None, target_exe=None):
     """
     Gọi GitHub API để kiểm tra phiên bản mới nhất từ GitHub Releases.
     Trả về dict thông tin nếu có bản mới, hoặc None nếu đã là bản mới nhất/lỗi.
     """
     local_ver = current_version if current_version is not None else APP_VERSION
+    if not target_exe:
+        target_exe = get_current_exe_name()
     api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
     try:
         req = urllib.request.Request(
@@ -72,46 +110,54 @@ def check_for_updates(current_version=None):
             if not is_newer_version(remote_tag, local_ver):
                 return {
                     "has_update": False,
+                    "target_exe": target_exe,
                     "current_version": local_ver,
                     "latest_version": remote_tag
                 }
 
-            # Tìm file tài nguyên cần tải: TS_Origin_Control_V3.exe
+            # Tìm file tài nguyên cần tải khớp với target_exe (TS_Origin_Control_V3.exe hoặc TS_Origin_Control_BlueStacks.exe)
             download_url = None
             asset_size = 0
+            target_lower = target_exe.lower()
             for asset in data.get("assets", []):
                 name = asset.get("name", "")
-                if name.lower() == "ts_origin_control_v3.exe":
+                if name.lower() == target_lower:
                     download_url = asset.get("browser_download_url")
                     asset_size = asset.get("size", 0)  # [FIX M3]
                     break
 
             if not download_url:
+                print(f"[Updater] Khong tim thay asset {target_exe} tren Release {remote_tag}.")
                 return None
 
             release_body = data.get("body", "Bản cập nhật mới.")
             return {
                 "has_update": True,
+                "target_exe": target_exe,
                 "current_version": local_ver,                    # [FIX M4] local_ver thay APP_VERSION
                 "latest_version": remote_tag,
                 "download_url": download_url,
                 "size": asset_size,                              # [FIX M3] kích thước asset từ API
                 "changelog": release_body,
-                "sha256": _parse_sha256_from_body(release_body) # [FIX C2] checksum
+                "sha256": _parse_sha256_from_body(release_body, target_name=target_exe) # [FIX C2] checksum
             }
     except Exception as e:
         # Nếu mất mạng hoặc chưa có release thì âm thầm bỏ qua
         return None
 
-def download_and_apply_update(download_url, progress_callback=None, app=None, known_size: int = 0, expected_sha256: str = None):
+def download_and_apply_update(download_url, progress_callback=None, app=None, known_size: int = 0, expected_sha256: str = None, target_exe: str = None):
     """
-    Tải file TS_Origin_Control_V3.exe về thư mục tạm _update_temp,
+    Tải file target_exe về thư mục tạm _update_temp,
     xác minh SHA256 [C2], rồi kích hoạt apply_update.bat để ghi đè và restart.
 
     Params:
         known_size      – kích thước asset từ API (fallback khi CDN không trả content-length). [M3]
         expected_sha256 – SHA256 nhúng trong release body để xác minh toàn vẹn file. [C2]
+        target_exe      – Tên file exe đích (TS_Origin_Control_V3.exe hoặc TS_Origin_Control_BlueStacks.exe).
     """
+    if not target_exe:
+        target_exe = get_current_exe_name(app)
+
     app_dir = get_app_dir()
     temp_dir = os.path.join(app_dir, "_update_temp")
     os.makedirs(temp_dir, exist_ok=True)
@@ -155,7 +201,7 @@ def download_and_apply_update(download_url, progress_callback=None, app=None, kn
             raise ValueError("File tải về không hoàn chỉnh (kích thước quá nhỏ < 10 MB)!")
 
         # Đổi tên sang tên đích cuối cùng
-        temp_file = os.path.join(temp_dir, "TS_Origin_Control_V3.exe")
+        temp_file = os.path.join(temp_dir, target_exe)
         os.replace(tmp_partial, temp_file)
         if progress_callback:
             progress_callback(100, os.path.getsize(temp_file), os.path.getsize(temp_file))
@@ -170,24 +216,24 @@ def download_and_apply_update(download_url, progress_callback=None, app=None, kn
     bat_content = f"""@echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-title Cap Nhat TS Origin Control V3...
+title Cap Nhat {target_exe}...
 
 echo ========================================================
-echo   HE THONG TU DONG CAP NHAT TS ORIGIN CONTROL V3
+echo   HE THONG TU DONG CAP NHAT {target_exe}
 echo ========================================================
 echo [1/3] Dang dong cac tien trinh cu de giai phong file...
-taskkill /F /IM "TS_Origin_Control_V3.exe" >nul 2>nul
+taskkill /F /IM "{target_exe}" >nul 2>nul
 ping 127.0.0.1 -n 3 >nul
 
 echo [2/3] Dang ghi de ban cap nhat moi...
 set RETRY_COUNT=0
 :COPY_LOOP
-copy /y "_update_temp\\TS_Origin_Control_V3.exe" "TS_Origin_Control_V3.exe" >nul
+copy /y "_update_temp\\{target_exe}" "{target_exe}" >nul
 if errorlevel 1 (
     set /a RETRY_COUNT+=1
     if %RETRY_COUNT% leq 20 (
         echo   - File dang ban, dang thu lai lan %RETRY_COUNT%/20...
-        taskkill /F /IM "TS_Origin_Control_V3.exe" >nul 2>nul
+        taskkill /F /IM "{target_exe}" >nul 2>nul
         ping 127.0.0.1 -n 2 >nul
         goto COPY_LOOP
     ) else (
@@ -213,7 +259,7 @@ set PYINSTALLER_RESET_ENVIRONMENT=
 if exist "launch_app.vbs" (
     start "" wscript "launch_app.vbs"
 ) else (
-    start "" "TS_Origin_Control_V3.exe"
+    start "" "{target_exe}"
 )
 
 ping 127.0.0.1 -n 2 >nul
@@ -232,12 +278,12 @@ ping 127.0.0.1 -n 2 >nul
     # [FIX N2] Cảnh báo 5 giây để user tắt bot trước khi app tự restart
     if app and hasattr(app, 'log_warning'):
         app.after(0, app.log_warning,
-                  "⚠️ [Auto-Update] Tải xong! Tool sẽ tự khởi động lại sau 5 giây. "
+                  f"⚠️ [Auto-Update] Tải xong {target_exe}! Tool sẽ tự khởi động lại sau 5 giây. "
                   "Tắt bot trước nếu đang chạy để tránh bị ngắt đột ngột!")
     time.sleep(5.0)
 
     if app and hasattr(app, 'log_info'):
-        app.after(0, app.log_info, "🔄 [Auto-Update] Đang áp dụng bản mới và khởi động lại...")
+        app.after(0, app.log_info, f"🔄 [Auto-Update] Đang áp dụng bản mới {target_exe} và khởi động lại...")
 
     # [FIX C3] CREATE_NEW_PROCESS_GROUP đảm bảo cmd.exe hoàn toàn độc lập với tiến trình hiện tại
     CREATE_NEW_CONSOLE       = 0x00000010
@@ -263,26 +309,29 @@ def start_background_updater(app):
     def _worker():
         # Đợi 3 giây để hệ thống chính và Web UI sẵn sàng
         time.sleep(3)
+        target_exe = get_current_exe_name(app)
 
         # Kiểm tra xem có đang chạy từ file đóng gói .exe không
         is_frozen = getattr(sys, 'frozen', False)
         if not is_frozen:
-            print(f"[Updater] Dang chay tu ma nguon Python (v{APP_VERSION}). Khong tu dong cap nhat de tranh ghi de file lap trinh.")
+            print(f"[Updater] Dang chay tu ma nguon Python ({target_exe} - v{APP_VERSION}). Khong tu dong cap nhat de tranh ghi de file lap trinh.")
             if hasattr(app, 'update_info'):
                 app.update_info = {
                     "status": "dev_mode",
-                    "current_version": APP_VERSION
+                    "current_version": APP_VERSION,
+                    "target_exe": target_exe
                 }
             return
 
-        print(f"[Updater] Dang kiem tra ban cap nhat tren GitHub (Hien tai: v{APP_VERSION})...")
-        update = check_for_updates()
+        print(f"[Updater] Dang kiem tra ban cap nhat tren GitHub cho {target_exe} (Hien tai: v{APP_VERSION})...")
+        update = check_for_updates(target_exe=target_exe)
         if not update or not update.get("has_update"):
-            print("[Updater] Ban dang su dung phien ban moi nhat.")
+            print(f"[Updater] Ban dang su dung phien ban {target_exe} moi nhat.")
             if hasattr(app, 'update_info'):
                 app.update_info = {
                     "status": "up_to_date",
-                    "current_version": APP_VERSION
+                    "current_version": APP_VERSION,
+                    "target_exe": target_exe
                 }
             return
 
@@ -290,9 +339,9 @@ def start_background_updater(app):
         download_url    = update.get("download_url")
         known_size      = update.get("size", 0)       # [FIX M3]
         expected_sha256 = update.get("sha256")        # [FIX C2]
-        print(f"[Updater] Phat hien ban moi: {latest_ver}! Bat dau tai ve...")
+        print(f"[Updater] Phat hien ban moi cho {target_exe}: {latest_ver}! Bat dau tai ve...")
         if hasattr(app, 'log_info'):
-            app.after(0, app.log_info, f"🚀 [Auto-Update] Phát hiện bản mới {latest_ver}! Đang tự động tải về ngầm...")
+            app.after(0, app.log_info, f"🚀 [Auto-Update] Phát hiện bản mới {latest_ver} cho {target_exe}! Đang tự động tải về ngầm...")
 
         # Cập nhật trạng thái cho Web UI và App
         if hasattr(app, 'update_info'):
@@ -300,6 +349,7 @@ def start_background_updater(app):
                 "status": "downloading",
                 "current_version": APP_VERSION,
                 "latest_version": latest_ver,
+                "target_exe": target_exe,
                 "progress": 0,
                 "changelog": update.get("changelog", "")
             }
@@ -314,18 +364,21 @@ def start_background_updater(app):
                 progress_callback=on_progress,
                 app=app,
                 known_size=known_size,           # [FIX M3]
-                expected_sha256=expected_sha256  # [FIX C2]
+                expected_sha256=expected_sha256, # [FIX C2]
+                target_exe=target_exe
             )
         except Exception as e:
-            print(f"[Updater] Loi trong qua trinh tu dong cap nhat: {e}")
+            print(f"[Updater] Loi trong qua trinh tu dong cap nhat {target_exe}: {e}")
             if hasattr(app, 'log_warning'):
-                app.after(0, app.log_warning, f"⚠️ [Auto-Update] Không thể tự cập nhật: {e}")
+                app.after(0, app.log_warning, f"⚠️ [Auto-Update] Không thể tự cập nhật {target_exe}: {e}")
             if hasattr(app, 'update_info'):
                 app.update_info = {
                     "status": "error",
                     "error": str(e),
-                    "current_version": APP_VERSION
+                    "current_version": APP_VERSION,
+                    "target_exe": target_exe
                 }
 
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
+
