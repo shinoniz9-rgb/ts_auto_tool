@@ -218,6 +218,7 @@ class ToolBlueStacksGUI(ctk.CTk):
         self.telegram_chat_id_2 = ""
         self.current_active_tab = None
         self._run_token = 0
+        self._adb_lock = threading.Lock()
         self._screen_cache = {}
         self._active_adb_device = {}
 
@@ -517,41 +518,13 @@ class ToolBlueStacksGUI(ctk.CTk):
             if not os.path.exists(adb_path):
                 return
             creation_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-            current_slot = 1
+
+            # Đảm bảo ADB Server đang chạy mà không làm gián đoạn hay ảnh hưởng tới các tool khác
             try:
-                current_slot = int(getattr(self, 'slot_index', 1))
+                subprocess.run([adb_path, "start-server"], timeout=4, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creation_flags)
             except Exception:
-                current_slot = 1
-            other_running = _has_other_running_slots(current_slot)
-
-            need_hard_kill = False
-            try:
-                # Kiểm tra độ phản hồi của ADB Server hiện tại
-                p_test = subprocess.run([adb_path, "devices"], timeout=2.0, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=creation_flags)
-                if p_test.returncode != 0:
-                    need_hard_kill = True
-            except (subprocess.TimeoutExpired, Exception):
-                need_hard_kill = True
-
-            # Chỉ thực hiện hard kill khi ADB Server thực sự bị lỗi/treo cứng VÀ không có tab tool khác đang auto
-            if need_hard_kill and not other_running:
-                # 1. Kill sạch mọi tiến trình adb cũ
-                try:
-                    subprocess.run(["taskkill", "/F", "/IM", "adb.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creation_flags)
-                    time.sleep(0.3)
-                except Exception:
-                    pass
-                try:
-                    subprocess.run([adb_path, "kill-server"], timeout=4, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creation_flags)
-                    time.sleep(0.3)
-                except Exception:
-                    pass
-                # 2. Khởi động lại ADB server sạch sẽ
-                subprocess.run([adb_path, "start-server"], timeout=8, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creation_flags)
-                time.sleep(0.5)
-                self.after(0, self.log_info, "🔌 [ADB] Đã khởi tạo mới ADB Server chính chủ — giả lập sạch hoàn toàn.")
-            else:
-                self.after(0, self.log_info, "🔌 [ADB] Kế thừa ADB Server đang hoạt động tốt (không làm gián đoạn game).")
+                pass
+            self.after(0, self.log_info, "🔌 [ADB] Kết nối ADB Server ổn định (hoàn toàn cách ly, không ảnh hưởng các tool khác).")
 
             # 3. Kết nối chủ động vào các cổng BlueStacks phổ biến
             default_bs_ports = [5555, 5565, 5575, 5585, 5595, 5605, 5615, 5625, 5635, 5645, 5655]
@@ -570,25 +543,7 @@ class ToolBlueStacksGUI(ctk.CTk):
             pass
 
     def _destroy_app_completely(self):
-        # Chỉ kill ADB server khi không còn cửa sổ slot nào khác đang chạy
-        try:
-            current_slot = 1
-            try:
-                current_slot = int(getattr(self, 'slot_index', 1))
-            except Exception:
-                current_slot = 1
-            if not _has_other_running_slots(current_slot):
-                adb_path = self._get_adb_path()
-                if os.path.exists(adb_path):
-                    subprocess.run(
-                        [adb_path, "kill-server"],
-                        timeout=4,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-                    )
-        except Exception:
-            pass
+        # Không kill ADB server khi tắt app để đảm bảo các cửa sổ/tool khác vẫn chạy ổn định
         try:
             web_server.stop_active_tunnel(self)
         except Exception:
@@ -3923,17 +3878,20 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         return self._get_adb_path()
 
     def _exec_cmd(self, cmd_list, text=False, timeout=12):
-        """Thực thi lệnh ADB trực tiếp cho BlueStacks (tương thích 100% với dnconsole call signature)"""
+        """Thực thi lệnh ADB trực tiếp cho BlueStacks (tương thích 100% với dnconsole call signature, Zero-pipe overhead)"""
         creation_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
         kwargs = {
-            "stdout": subprocess.PIPE,
-            "stderr": subprocess.PIPE,
             "creationflags": creation_flags
         }
         if text:
+            kwargs["stdout"] = subprocess.PIPE
+            kwargs["stderr"] = subprocess.PIPE
             kwargs["text"] = True
             kwargs["encoding"] = "utf-8"
             kwargs["errors"] = "ignore"
+        else:
+            kwargs["stdout"] = subprocess.DEVNULL
+            kwargs["stderr"] = subprocess.DEVNULL
 
         adb_path = self._get_adb_path()
 
@@ -4851,7 +4809,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             v2_x = int(round((1035 / 1280.0) * screen_w))
             v2_y = int(round((210 / 720.0) * screen_h))
 
-        self.after(0, self.log_info, f"🖥️ [CARD C: DỊ GIỚI - BƯỚC 1] LDPlayer Tab '{tab_name}' ({screen_w}x{screen_h})")
+        self.after(0, self.log_info, f"🖥️ [CARD C: DỊ GIỚI - BƯỚC 1] BlueStacks Tab '{tab_name}' ({screen_w}x{screen_h})")
 
         # =========================================================================
         # 📌 BƯỚC 2: QUY TRÌNH DỊ GIỚI ĐÊM (TÍCH HỢP MẶC ĐỊNH VÀO CÔNG TẮC TRƯỢT ON/OFF)
@@ -8472,7 +8430,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                 time.sleep(2.0)
 
     def _capture_screen_fast(self, dnconsole_path: str, tab_index: str, max_cache_age: float = 0.35):
-        """📸 Chụp ảnh màn hình BlueStacks siêu tốc: In-Memory ADB Stream với bản sửa lỗi Windows CRLF (Zero Disk I/O)"""
+        """📸 Chụp ảnh màn hình BlueStacks siêu tốc: In-Memory ADB Stream với bản sửa lỗi Windows CRLF (Zero Disk I/O & Thread-Safe)"""
         now = time.time()
         dev_id = self._resolve_device_id(tab_index)
         if not dev_id:
@@ -8480,14 +8438,17 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
 
         tab_key = str(dev_id)
 
-        # 1. Kiểm tra bộ nhớ đệm RAM (0.35s)
+        # 1. Kiểm tra bộ nhớ đệm RAM (0.35s) an toàn đa luồng
+        if not hasattr(self, '_adb_lock'):
+            self._adb_lock = threading.Lock()
         if not hasattr(self, '_screen_cache'):
             self._screen_cache = {}
 
-        cached = self._screen_cache.get(tab_key)
-        if cached is not None:
-            if (now - cached.get("time", 0)) < max_cache_age and cached.get("img") is not None:
-                return cached["img"]
+        with self._adb_lock:
+            cached = self._screen_cache.get(tab_key)
+            if cached is not None:
+                if (now - cached.get("time", 0)) < max_cache_age and cached.get("img") is not None:
+                    return cached["img"]
 
         adb_path = self._get_adb_path()
         if not adb_path or not os.path.exists(adb_path):
@@ -8523,7 +8484,8 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                     # Tự động chuẩn hóa về 1280x720 nếu độ phân giải khác
                     if img.shape[0] != 720 or img.shape[1] != 1280:
                         img = cv2.resize(img, (1280, 720), interpolation=cv2.INTER_LINEAR)
-                    self._screen_cache[tab_key] = {"time": time.time(), "img": img}
+                    with self._adb_lock:
+                        self._screen_cache[tab_key] = {"time": time.time(), "img": img}
                     return img
         except Exception:
             pass
@@ -8544,7 +8506,8 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                 if img is not None and getattr(img, 'shape', None) is not None and img.shape[0] > 0 and img.shape[1] > 0:
                     if img.shape[0] != 720 or img.shape[1] != 1280:
                         img = cv2.resize(img, (1280, 720), interpolation=cv2.INTER_LINEAR)
-                    self._screen_cache[tab_key] = {"time": time.time(), "img": img}
+                    with self._adb_lock:
+                        self._screen_cache[tab_key] = {"time": time.time(), "img": img}
                     return img
         except Exception:
             pass
@@ -8839,26 +8802,6 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         return None, None
 
 
-
-def _has_other_running_slots(current_slot: int = 1) -> bool:
-    """Kiểm tra xem còn cửa sổ Tool slot khác nào đang chạy không để tránh kill nhầm ADB server"""
-    try:
-        import ctypes
-        kernel32 = ctypes.windll.kernel32
-        ERROR_ALREADY_EXISTS = 183
-        for s in range(1, 11):
-            if s == current_slot:
-                continue
-            m_name = f"Global\\TS_Origin_Control_v3_Slot_{s}"
-            m = kernel32.CreateMutexW(None, False, m_name)
-            err = kernel32.GetLastError()
-            if m:
-                kernel32.CloseHandle(m)
-            if err == ERROR_ALREADY_EXISTS:
-                return True
-    except Exception:
-        pass
-    return False
 
 
 def _get_bluestacks_tabs_info_fast():

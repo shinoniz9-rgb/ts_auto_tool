@@ -164,9 +164,12 @@ class LDStreamManager:
                             except Exception:
                                 pass
                             try:
-                                p.kill()
+                                p.wait(timeout=0.1)
                             except Exception:
-                                pass
+                                try:
+                                    p.kill()
+                                except Exception:
+                                    pass
 
             # 2. Dự phòng qua cơ chế cache in-memory của tool nếu có
             if frame_bytes is None and hasattr(app, '_capture_screen_fast'):

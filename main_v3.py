@@ -208,6 +208,7 @@ class ToolLDPlayerGUI(ctk.CTk):
         self.telegram_chat_id_2 = "-1004344257210"
         self.current_active_tab = None
         self._run_token = 0
+        self._adb_lock = threading.Lock()
         self._screen_cache = {}
         self._active_adb_device = {}
 
@@ -356,98 +357,27 @@ class ToolLDPlayerGUI(ctk.CTk):
         return which_adb if which_adb else "adb.exe"
 
     def _cleanup_adb_sessions(self):
-        """Khởi tạo và làm sạch ADB session chuẩn xác:
-        1. Nếu là Cửa Sổ Đầu Tiên (Cold Start) hoặc ADB Server bị treo cứng:
-           -> Dọn sạch toàn bộ tiến trình ADB cũ (kill-server) để không hư giả lập,
-              khởi động ADB server mới từ ld_path và connect sẵn sàng.
-        2. Nếu đã có Tab khác đang chạy và ADB server đang khỏe mạnh:
-           -> Tuyệt đối KHÔNG kill server (để không phá hỏng Auto của tab khác),
-              chỉ thực hiện kết nối riêng cho Tab của mình (connect 127.0.0.1:<port> & reconnect offline).
+        """Khởi tạo ADB server an toàn đa tool:
+        1. Đảm bảo ADB server đang chạy ngầm bằng start-server (an toàn, là no-op nếu server đã chạy).
+        2. TUYỆT ĐỐI KHÔNG kill-server hoặc taskkill adb.exe để bảo vệ các Tab khác đang chạy song song.
+        3. TUYỆT ĐỐI KHÔNG gọi adb reconnect offline toàn cục làm đứt kết nối các tab khác.
         """
         try:
             adb_path = self._get_adb_path()
             if not os.path.exists(adb_path):
                 return
             creation_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-            current_slot = 1
-            try:
-                current_slot = int(getattr(self, 'slot_index', 1))
-            except Exception:
-                current_slot = 1
-            other_running = _has_other_running_slots(current_slot)
 
-            need_hard_kill = False
-            if not other_running:
-                # Cửa sổ đầu tiên mở tool -> Bắt buộc kill sạch để không hư giả lập
-                need_hard_kill = True
-            else:
-                # Đã có tab khác đang chạy -> Kiểm tra xem ADB server hiện tại có bị treo cứng không
-                try:
-                    p_test = subprocess.run([adb_path, "devices"], timeout=2.5, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=creation_flags)
-                    if p_test.returncode != 0:
-                        need_hard_kill = True
-                except subprocess.TimeoutExpired:
-                    # ADB server bị treo cứng trên Windows -> Buộc phải giải cứu bằng hard kill
-                    need_hard_kill = True
-                except Exception:
-                    pass
-
-            if need_hard_kill:
-                # 1. Kill sạch mọi tiến trình adb cũ
-                try:
-                    subprocess.run(["taskkill", "/F", "/IM", "adb.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creation_flags)
-                    time.sleep(0.3)
-                except Exception:
-                    pass
-                try:
-                    subprocess.run([adb_path, "kill-server"], timeout=4, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creation_flags)
-                    time.sleep(0.3)
-                except Exception:
-                    pass
-                # 2. Khởi động lại ADB server sạch sẽ
-                subprocess.run([adb_path, "start-server"], timeout=8, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creation_flags)
-                time.sleep(0.5)
-                self.after(0, self.log_info, "🔌 [ADB] Đã khởi tạo mới ADB Server chính chủ — giả lập sạch hoàn toàn.")
-            else:
-                self.after(0, self.log_info, "🔌 [ADB] Kế thừa ADB Server đang hoạt động tốt từ Tab trước (không ngắt quãng Auto).")
-
-            # 3. Kết nối chủ động vào cổng của Tab này (tránh tình trạng emulator bị offline / device not found)
-            tab_idx_val = 0
+            # Đảm bảo ADB Server luôn hoạt động ngầm (start-server tuyệt đối an toàn với các tab khác)
             try:
-                assigned = getattr(self, 'assigned_tab_index', '0')
-                tab_idx_val = int(assigned) if str(assigned).isdigit() else 0
-            except Exception:
-                tab_idx_val = 0
-            
-            target_port = 5555 + (tab_idx_val * 2)
-            try:
-                subprocess.run([adb_path, "connect", f"127.0.0.1:{target_port}"], timeout=3, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creation_flags)
-                subprocess.run([adb_path, "reconnect", "offline"], timeout=3, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creation_flags)
+                subprocess.run([adb_path, "start-server"], timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creation_flags)
             except Exception:
                 pass
         except Exception:
             pass
 
     def _destroy_app_completely(self):
-        # Chỉ kill ADB server khi không còn cửa sổ slot nào khác đang chạy
-        try:
-            current_slot = 1
-            try:
-                current_slot = int(getattr(self, 'slot_index', 1))
-            except Exception:
-                current_slot = 1
-            if not _has_other_running_slots(current_slot):
-                adb_path = self._get_adb_path()
-                if os.path.exists(adb_path):
-                    subprocess.run(
-                        [adb_path, "kill-server"],
-                        timeout=4,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-                    )
-        except Exception:
-            pass
+        # Khi đóng cửa sổ: Giải phóng tài nguyên Web & Tunnel, KHÔNG kill ADB server chung để bảo vệ các tab khác
         try:
             web_server.stop_active_tunnel(self)
         except Exception:
@@ -856,6 +786,10 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
 
                 if delay_seconds > 0:
                     time.sleep(delay_seconds)
+
+                # Dừng ngay lập tức nếu người dùng đã bấm Dừng hoặc đổi Tab
+                if getattr(self, 'stop_requested', False):
+                    return
 
                 img_bytes = None
                 if capture_screenshot and dnconsole_path:
@@ -1456,25 +1390,9 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
 
         # Tăng token phiên chạy để các luồng chạy cũ tự thoát ngay và dọn sạch cache
         self._run_token = getattr(self, '_run_token', 0) + 1
-        self._screen_cache = {}
-        self._active_adb_device = {}
-
-        # Kết nối ngầm tự động vào cổng ADB của tab vừa chọn để đảm bảo luôn ở trạng thái device (online)
-        tab_idx_str = self.dict_name_to_index.get(choice, "")
-        if not tab_idx_str and hasattr(self, '_resolve_tab_index_fallback'):
-            tab_idx_str = self._resolve_tab_index_fallback(choice)
-        if tab_idx_str and str(tab_idx_str).isdigit():
-            def _quick_connect_tab(idx_num):
-                adb_p = self._get_adb_path()
-                if adb_p and os.path.exists(adb_p):
-                    cflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-                    t_port = 5555 + (int(idx_num) * 2)
-                    try:
-                        subprocess.run([adb_p, "connect", f"127.0.0.1:{t_port}"], timeout=2, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=cflags)
-                    except Exception:
-                        pass
-            threading.Thread(target=_quick_connect_tab, args=(int(tab_idx_str),), daemon=True).start()
-
+        with self._adb_lock:
+            self._screen_cache = {}
+            self._active_adb_device = {}
         self.load_config(target_tab=choice)
         self.log_info(f"🔄 Đã nạp cấu hình riêng của tab LDPlayer: '{choice}'")
 
@@ -3827,31 +3745,36 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         return None
 
     def _exec_cmd(self, cmd_list, text=False):
-        """Thực thi lệnh ADB/LDConsole an toàn và chính xác 100% trên mọi Tab LDPlayer"""
+        """Thực thi lệnh ADB/LDConsole an toàn và chính xác 100% trên mọi Tab LDPlayer (Zero-pipe deadlock)"""
         creation_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
         kwargs = {
-            "stdout": subprocess.PIPE,
-            "stderr": subprocess.PIPE,
             "creationflags": creation_flags
         }
         if text:
+            kwargs["stdout"] = subprocess.PIPE
+            kwargs["stderr"] = subprocess.PIPE
             kwargs["text"] = True
             kwargs["encoding"] = "utf-8"
             kwargs["errors"] = "ignore"
+        else:
+            kwargs["stdout"] = subprocess.DEVNULL
+            kwargs["stderr"] = subprocess.DEVNULL
+
+        cmd_timeout = 15 if text else 8
 
         # 1. Thử chạy trực tiếp lệnh dnconsole/ldconsole (Cơ chế chuẩn native 100% của LDPlayer)
         try:
-            res = subprocess.run(cmd_list, timeout=15, **kwargs)
+            res = subprocess.run(cmd_list, timeout=cmd_timeout, **kwargs)
             if res is not None and res.returncode == 0:
                 return res
-            elif res is not None:
+            elif res is not None and text:
                 # Nếu lệnh dnconsole chính chủ chạy xong (kể cả returncode != 0), vẫn ưu tiên kết quả chính chủ
-                pass
+                return res
         except OSError as e:
             if getattr(e, 'winerror', None) == 740 or "740" in str(e):
                 try:
                     cmd_str = " ".join([f'"{arg}"' if " " in str(arg) else str(arg) for arg in cmd_list])
-                    res_cmd = subprocess.run(f'cmd /c {cmd_str}', shell=True, timeout=15, **kwargs)
+                    res_cmd = subprocess.run(f'cmd /c {cmd_str}', shell=True, timeout=cmd_timeout, **kwargs)
                     if res_cmd is not None:
                         return res_cmd
                 except Exception:
@@ -3859,7 +3782,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         except Exception:
             pass
 
-        # 2. Nếu là lệnh ADB gọi qua dnconsole và gặp sự cố, mới chuyển hướng dự phòng qua adb.exe
+        # 2. Nếu là lệnh ADB gọi qua dnconsole và gặp sự cố, mới chuyển hướng dự phòng qua adb.exe trực tiếp
         if len(cmd_list) >= 6 and cmd_list[1] == "adb" and "--index" in cmd_list and "--command" in cmd_list:
             try:
                 idx_pos = cmd_list.index("--index") + 1
@@ -3870,18 +3793,13 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                 adb_path = self._get_adb_path()
 
                 if os.path.exists(adb_path):
-                    port_5555 = 5555 + (tab_idx * 2)
                     port_5554 = 5554 + (tab_idx * 2)
-                    
-                    # Kết nối tự động lại cổng ADB nếu bị rớt
-                    try:
-                        subprocess.run([adb_path, "connect", f"127.0.0.1:{port_5555}"], timeout=3, **kwargs)
-                    except Exception:
-                        pass
+                    port_5555 = 5555 + (tab_idx * 2)
 
+                    # Ưu tiên emulator-XXXX chính chủ của LDPlayer, chỉ fallback 127.0.0.1:XXXX nếu cần
                     candidate_devices = [
-                        f"127.0.0.1:{port_5555}",
-                        f"emulator-{port_5554}"
+                        f"emulator-{port_5554}",
+                        f"127.0.0.1:{port_5555}"
                     ]
 
                     for device_id in candidate_devices:
@@ -3899,15 +3817,15 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                                 subcmd_parts = subcmd_parts[1:]
                             direct_adb_cmd = [adb_path, "-s", device_id, "shell"] + subcmd_parts
 
-                        res = subprocess.run(direct_adb_cmd, timeout=15, **kwargs)
-                        if res.returncode == 0:
+                        res = subprocess.run(direct_adb_cmd, timeout=5, **kwargs)
+                        if res and res.returncode == 0:
                             return res
             except Exception:
                 pass
 
         # Fallback chạy lại lệnh gốc
         try:
-            return subprocess.run(cmd_list, timeout=15, **kwargs)
+            return subprocess.run(cmd_list, timeout=cmd_timeout, **kwargs)
         except Exception:
             return None
 
@@ -8333,14 +8251,17 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         now = time.time()
         tab_key = str(tab_index)
 
-        # 1. Kiểm tra bộ nhớ đệm màn hình ngắn hạn (Screen Reuse Cache)
+        # 1. Kiểm tra bộ nhớ đệm màn hình ngắn hạn (Screen Reuse Cache) an toàn đa luồng
+        if not hasattr(self, '_adb_lock'):
+            self._adb_lock = threading.Lock()
         if not hasattr(self, '_screen_cache'):
             self._screen_cache = {}
 
-        cached = self._screen_cache.get(tab_key)
-        if cached is not None:
-            if (now - cached.get("time", 0)) < max_cache_age and cached.get("img") is not None:
-                return cached["img"]
+        with self._adb_lock:
+            cached = self._screen_cache.get(tab_key)
+            if cached is not None:
+                if (now - cached.get("time", 0)) < max_cache_age and cached.get("img") is not None:
+                    return cached["img"]
 
         # 2. Ưu tiên 1: Chụp trực tiếp qua ADB exec-out stream (Zero Disk I/O - Không ghi đĩa SSD)
         adb_path = self._get_adb_path()
@@ -8362,21 +8283,8 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             if not hasattr(self, '_active_adb_device'):
                 self._active_adb_device = {}
 
-            # Ưu tiên thiết bị đã kết nối thành công trước đó, sau đó thử các candidate còn lại
-            active_dev = self._active_adb_device.get(tab_key)
-            if not active_dev:
-                # Tự động connect cổng ADB của tab này để chuyển trạng thái sang online/device
-                try:
-                    subprocess.run(
-                        [adb_path, "connect", f"127.0.0.1:{port_5555}"],
-                        timeout=1.5,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        creationflags=creation_flags
-                    )
-                except Exception:
-                    pass
-
+            with self._adb_lock:
+                active_dev = self._active_adb_device.get(tab_key)
             devices_to_try = ([active_dev] if active_dev in candidate_devices else []) + \
                              [d for d in candidate_devices if d != active_dev]
 
@@ -8392,14 +8300,16 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                     if res.returncode == 0 and len(res.stdout) > 10000:
                         img = cv2.imdecode(np.frombuffer(res.stdout, dtype=np.uint8), cv2.IMREAD_COLOR)
                         if img is not None and img.shape[0] > 0 and img.shape[1] > 0:
-                            self._active_adb_device[tab_key] = dev
-                            self._screen_cache[tab_key] = {"time": time.time(), "img": img}
+                            with self._adb_lock:
+                                self._active_adb_device[tab_key] = dev
+                                self._screen_cache[tab_key] = {"time": time.time(), "img": img}
                             return img
                 except Exception:
                     pass
 
             # Nếu cả hai candidate đều thất bại, xóa active_dev để chu kỳ sau tái kết nối
-            self._active_adb_device.pop(tab_key, None)
+            with self._adb_lock:
+                self._active_adb_device.pop(tab_key, None)
 
         # 3. Ưu tiên 2 (Fallback an toàn): Chụp qua file tạm trên đĩa nếu ADB Direct Stream chưa sẵn sàng
         temp_dir = os.path.join(tempfile.gettempdir(), "ts_origin_temp")
@@ -8417,7 +8327,8 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                 d = np.fromfile(temp_local, dtype=np.uint8)
                 img = cv2.imdecode(d, cv2.IMREAD_COLOR)
                 if img is not None and img.shape[0] > 0 and img.shape[1] > 0:
-                    self._screen_cache[tab_key] = {"time": time.time(), "img": img}
+                    with self._adb_lock:
+                        self._screen_cache[tab_key] = {"time": time.time(), "img": img}
                     return img
         except Exception:
             pass
@@ -8718,26 +8629,6 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         return None, None
 
 
-
-def _has_other_running_slots(current_slot: int = 1) -> bool:
-    """Kiểm tra xem còn cửa sổ Tool slot khác nào đang chạy không để tránh kill nhầm ADB server"""
-    try:
-        import ctypes
-        kernel32 = ctypes.windll.kernel32
-        ERROR_ALREADY_EXISTS = 183
-        for s in range(1, 11):
-            if s == current_slot:
-                continue
-            m_name = f"Global\\TS_Origin_Control_v3_Slot_{s}"
-            m = kernel32.CreateMutexW(None, False, m_name)
-            err = kernel32.GetLastError()
-            if m:
-                kernel32.CloseHandle(m)
-            if err == ERROR_ALREADY_EXISTS:
-                return True
-    except Exception:
-        pass
-    return False
 
 
 def _get_ld_tabs_info_fast():
