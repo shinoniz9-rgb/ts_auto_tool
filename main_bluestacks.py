@@ -233,9 +233,6 @@ class ToolBlueStacksGUI(ctk.CTk):
         # Căn giữa cửa sổ ứng dụng trên màn hình Desktop (Kích thước cố định 610x665)
         self._center_window(610, 665)
 
-        # Quét danh sách LDPlayer lần đầu tiên
-        self.refresh_ld_tabs_async()
-
         # Khởi tạo bộ nhớ log thời gian thực & Kích hoạt Web Server điều khiển từ xa
         self.recent_logs = []
         self.update_info = None
@@ -244,8 +241,8 @@ class ToolBlueStacksGUI(ctk.CTk):
         self.after(1000, lambda: self.log_info(f"✨ TS Origin Control BlueStacks (v{APP_VERSION}) - Slot {self.slot_index} (Tab Index: {self.assigned_tab_index}, Port: {self.web_port}) - Đã sẵn sàng!"))
         self.after(2500, lambda: updater.start_background_updater(self))
 
-        # Dọn sạch ADB session bẩn từ lần chạy trước (chống xung đột ADB khi dev/debug)
-        threading.Thread(target=self._cleanup_adb_sessions, daemon=True).start()
+        # Khởi động tuần tự an toàn: Đảm bảo ADB Server sẵn sàng trước rồi mới tiến hành quét Tab (chống 100% Race Condition)
+        threading.Thread(target=self._init_startup_sequence, daemon=True).start()
 
         # Luồng ngầm tự động nhận thư theo mốc giờ (tĩnh hoàn toàn khi tắt, kích hoạt qua _event_nhan_thu khi ô Nhận Thư được tích)
         threading.Thread(target=self._worker_auto_mail_daemon, daemon=True).start()
@@ -492,14 +489,28 @@ class ToolBlueStacksGUI(ctk.CTk):
             self.adb_path = self._find_adb_path()
         return self.adb_path
 
+    def _init_startup_sequence(self):
+        """Khởi động tuần tự an toàn tuyệt đối cho BlueStacks:
+        1. Kiểm tra / chuẩn bị ADB Server trước.
+        2. Sau khi ADB hoàn toàn ổn định và kết nối xong, mới tiến hành quét tab.
+        -> Tránh 100% hiện tượng Race Condition làm rớt quét Tab 0!
+        """
+        try:
+            self._cleanup_adb_sessions()
+        except Exception:
+            pass
+        # Quét danh sách BlueStacks ngay sau khi ADB Server đã sẵn sàng
+        self._worker_scan_ld()
+
     def _cleanup_adb_sessions(self):
-        """Khởi tạo và làm sạch ADB session chuẩn xác:
-        1. Nếu là Cửa Sổ Đầu Tiên (Cold Start) hoặc ADB Server bị treo cứng:
-           -> Dọn sạch toàn bộ tiến trình ADB cũ (kill-server) để không hư giả lập,
-              khởi động ADB server mới từ ld_path và connect sẵn sàng.
-        2. Nếu đã có Tab khác đang chạy và ADB server đang khỏe mạnh:
+        """Khởi tạo và làm sạch ADB session chuẩn xác cho BlueStacks:
+        1. Nếu là Cửa Sổ Đầu Tiên (Cold Start):
+           -> Ping thử 'adb devices' xem ADB Server hiện tại có khỏe không.
+           -> Nếu ADB server đang sống tốt (BlueStacks mở trước): Giữ nguyên, KHÔNG kill server để không ngắt kết nối game!
+           -> Chỉ kill và khởi động lại sạch sẽ khi ADB server bị đơ hoặc lỗi.
+        2. Nếu đã có Tab khác đang chạy:
            -> Tuyệt đối KHÔNG kill server (để không phá hỏng Auto của tab khác),
-              chỉ thực hiện kết nối riêng cho Tab của mình (connect 127.0.0.1:<port> & reconnect offline).
+              chỉ thực hiện kết nối riêng cho Tab của mình (connect 127.0.0.1:<port>).
         """
         try:
             adb_path = self._get_adb_path()
@@ -514,22 +525,16 @@ class ToolBlueStacksGUI(ctk.CTk):
             other_running = _has_other_running_slots(current_slot)
 
             need_hard_kill = False
-            if not other_running:
-                # Cửa sổ đầu tiên mở tool -> Bắt buộc kill sạch để không hư giả lập
-                need_hard_kill = True
-            else:
-                # Đã có tab khác đang chạy -> Kiểm tra xem ADB server hiện tại có bị treo cứng không
-                try:
-                    p_test = subprocess.run([adb_path, "devices"], timeout=2.5, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=creation_flags)
-                    if p_test.returncode != 0:
-                        need_hard_kill = True
-                except subprocess.TimeoutExpired:
-                    # ADB server bị treo cứng trên Windows -> Buộc phải giải cứu bằng hard kill
+            try:
+                # Kiểm tra độ phản hồi của ADB Server hiện tại
+                p_test = subprocess.run([adb_path, "devices"], timeout=2.0, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=creation_flags)
+                if p_test.returncode != 0:
                     need_hard_kill = True
-                except Exception:
-                    pass
+            except (subprocess.TimeoutExpired, Exception):
+                need_hard_kill = True
 
-            if need_hard_kill:
+            # Chỉ thực hiện hard kill khi ADB Server thực sự bị lỗi/treo cứng VÀ không có tab tool khác đang auto
+            if need_hard_kill and not other_running:
                 # 1. Kill sạch mọi tiến trình adb cũ
                 try:
                     subprocess.run(["taskkill", "/F", "/IM", "adb.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creation_flags)
@@ -546,17 +551,17 @@ class ToolBlueStacksGUI(ctk.CTk):
                 time.sleep(0.5)
                 self.after(0, self.log_info, "🔌 [ADB] Đã khởi tạo mới ADB Server chính chủ — giả lập sạch hoàn toàn.")
             else:
-                self.after(0, self.log_info, "🔌 [ADB] Kế thừa ADB Server đang hoạt động tốt từ Tab trước (không ngắt quãng Auto).")
+                self.after(0, self.log_info, "🔌 [ADB] Kế thừa ADB Server đang hoạt động tốt (không làm gián đoạn game).")
 
             # 3. Kết nối chủ động vào các cổng BlueStacks phổ biến
-            default_bs_ports = [5555, 5565, 5575, 5585, 5595, 5605, 5615, 5625]
+            default_bs_ports = [5555, 5565, 5575, 5585, 5595, 5605, 5615, 5625, 5635, 5645, 5655]
             conf_p = self._find_bluestacks_conf()
             conf_insts = self._parse_bluestacks_conf(conf_p) if conf_p else {}
             for inst in conf_insts.values():
                 p = inst.get("port")
                 if p and p.isdigit():
                     default_bs_ports.append(int(p))
-            for port in set(default_bs_ports):
+            for port in sorted(set(default_bs_ports)):
                 try:
                     subprocess.run([adb_path, "connect", f"127.0.0.1:{port}"], timeout=0.6, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creation_flags)
                 except Exception:
@@ -1465,20 +1470,22 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         self._active_adb_device = {}
 
         # Kết nối ngầm tự động vào cổng ADB của tab vừa chọn để đảm bảo luôn ở trạng thái device (online)
-        tab_idx_str = self.dict_name_to_index.get(choice, "")
-        if not tab_idx_str and hasattr(self, '_resolve_tab_index_fallback'):
-            tab_idx_str = self._resolve_tab_index_fallback(choice)
-        if tab_idx_str and str(tab_idx_str).isdigit():
-            def _quick_connect_tab(idx_num):
+        target_dev = None
+        if hasattr(self, 'dict_name_to_device'):
+            target_dev = self.dict_name_to_device.get(choice)
+        if not target_dev:
+            target_dev = self._resolve_device_id(choice)
+        if target_dev and (":" in target_dev or target_dev.startswith("emulator-")):
+            def _quick_connect_tab(dev_to_conn):
                 adb_p = self._get_adb_path()
                 if adb_p and os.path.exists(adb_p):
                     cflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-                    t_port = 5555 + (int(idx_num) * 2)
-                    try:
-                        subprocess.run([adb_p, "connect", f"127.0.0.1:{t_port}"], timeout=2, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=cflags)
-                    except Exception:
-                        pass
-            threading.Thread(target=_quick_connect_tab, args=(int(tab_idx_str),), daemon=True).start()
+                    if ":" in dev_to_conn:
+                        try:
+                            subprocess.run([adb_p, "connect", dev_to_conn], timeout=2, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=cflags)
+                        except Exception:
+                            pass
+            threading.Thread(target=_quick_connect_tab, args=(target_dev,), daemon=True).start()
 
         self.load_config(target_tab=choice)
         self.log_info(f"🔄 Đã nạp cấu hình riêng của tab BlueStacks: '{choice}'")
@@ -1663,39 +1670,66 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             self.refresh_ld_tabs_async()
 
     def _is_bluestacks_device(self, dev_id: str, conf_instances: dict) -> tuple:
-        """Kiểm tra thiết bị có đúng là BlueStacks không. Trả về (is_bs: bool, label: str)"""
-        # 1. Khớp từ bluestacks.conf nếu có
-        for inst in conf_instances.values():
-            p = inst.get("port")
-            if p and (dev_id == f"127.0.0.1:{p}" or dev_id.endswith(f":{p}")):
-                dname = inst.get("display_name") or "BlueStacks"
-                return True, f"{dname} ({p})"
+        """Kiểm tra thiết bị có đúng là BlueStacks không.
+        Trả về (is_bs: bool, label: str, sort_key: int)
+        """
+        # 1. Rút trích số cổng ADB từ dev_id
+        port_num = None
+        if ":" in dev_id:
+            try:
+                port_num = int(dev_id.split(":")[-1])
+            except Exception:
+                pass
+        elif dev_id.startswith("emulator-"):
+            try:
+                c_port = int(dev_id.split("-")[1])
+                # Quy ước Android: console_port 5554 -> adb_port 5555
+                port_num = c_port + 1
+            except Exception:
+                pass
 
-        # 2. Kiểm tra qua getprop của BlueStacks
+        # 2. Khớp từ cấu hình bluestacks.conf nếu có
+        for inst_id, inst in conf_instances.items():
+            p = inst.get("port")
+            if p and p.isdigit():
+                p_int = int(p)
+                if port_num == p_int or dev_id == f"127.0.0.1:{p}" or dev_id.endswith(f":{p}"):
+                    dname = inst.get("display_name") or inst_id
+                    return True, f"{dname} ({p})", p_int
+
+        # 3. Khớp theo dải cổng chuẩn của BlueStacks (5555: Tab 1, 5565: Tab 2, 5575: Tab 3...)
+        if port_num is not None and 5550 <= port_num <= 5680:
+            tab_num = 1 if port_num == 5555 else ((port_num - 5555) // 10 + 1 if (port_num - 5555) % 10 == 0 else 0)
+            lbl = f"BlueStacks Tab {tab_num} ({port_num})" if tab_num > 0 else f"BlueStacks ({port_num})"
+            return True, lbl, port_num
+
+        # 4. Kiểm tra sâu qua getprop nếu dùng cổng tùy biến
         try:
             adb_path = self._get_adb_path()
             cflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-            chk = subprocess.run([adb_path, "-s", dev_id, "shell", "getprop", "ro.boot.bst_instance"], timeout=1.5, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=cflags)
-            if chk and chk.stdout.strip():
-                bst_name = chk.stdout.strip()
-                port = dev_id.split(":")[-1] if ":" in dev_id else dev_id
-                return True, f"BlueStacks {bst_name} ({port})"
-
-            chk2 = subprocess.run([adb_path, "-s", dev_id, "shell", "getprop", "ro.bsp.emulator"], timeout=1.5, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=cflags)
-            if chk2 and "blue" in chk2.stdout.lower():
-                port = dev_id.split(":")[-1] if ":" in dev_id else dev_id
-                return True, f"BlueStacks ({port})"
+            chk = subprocess.run(
+                [adb_path, "-s", dev_id, "shell", "getprop ro.boot.bst_instance; getprop ro.bsp.emulator; getprop ro.bluestacks.version; getprop ro.product.board"],
+                timeout=2.5, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=cflags
+            )
+            if chk and chk.stdout:
+                out_lower = chk.stdout.lower()
+                lines = [l.strip() for l in chk.stdout.splitlines() if l.strip()]
+                bst_name = lines[0] if lines else ""
+                if "blue" in out_lower or "bst" in out_lower:
+                    p_str = str(port_num) if port_num else dev_id
+                    lbl = f"BlueStacks {bst_name} ({p_str})" if bst_name else f"BlueStacks ({p_str})"
+                    return True, lbl, (port_num if port_num else 9999)
         except Exception:
             pass
 
-        return False, ""
+        return False, "", 99999
 
     def _resolve_device_id(self, tab_identifier=None) -> str:
-        """Chuyển tab_index, tab_name hoặc device_id về dạng 127.0.0.1:<port> chuẩn của BlueStacks"""
+        """Chuyển tab_index, tab_name hoặc device_id về dạng device id chuẩn của BlueStacks"""
         if tab_identifier:
             t_str = str(tab_identifier).strip()
-            # Nếu đã là dạng device id IP:port
-            if ":" in t_str and (t_str.startswith("127.0.0.1:") or t_str.startswith("localhost:")):
+            # Nếu đã là dạng device id IP:port hoặc emulator-XXXX
+            if (":" in t_str and (t_str.startswith("127.0.0.1:") or t_str.startswith("localhost:"))) or t_str.startswith("emulator-"):
                 return t_str
             # Nếu là tên tab trong dict_name_to_device
             if hasattr(self, 'dict_name_to_device') and t_str in self.dict_name_to_device:
@@ -3994,50 +4028,83 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             conf_instances = self._parse_bluestacks_conf(conf_path) if conf_path else {}
 
             # 1. Kết nối nhanh tới các cổng BlueStacks
-            ports_to_connect = set([5555, 5565, 5575, 5585, 5595, 5605, 5615, 5625])
+            ports_to_connect = set([5555, 5565, 5575, 5585, 5595, 5605, 5615, 5625, 5635, 5645, 5655])
             for inst in conf_instances.values():
                 p = inst.get("port")
                 if p and p.isdigit():
                     ports_to_connect.add(int(p))
 
             cflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-            for port in ports_to_connect:
+            for port in sorted(ports_to_connect):
                 try:
                     subprocess.run([adb_path, "connect", f"127.0.0.1:{port}"], timeout=0.6, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=cflags)
                 except Exception:
                     pass
 
             # 2. Lấy danh sách thiết bị online từ adb devices
-            res = subprocess.run([adb_path, "devices"], timeout=3.0, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=cflags)
+            res = subprocess.run([adb_path, "devices"], timeout=3.5, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=cflags)
             if not res or not res.stdout:
                 self.after(0, self._update_ui_ld_scan_result, [], "Chưa mở BlueStacks")
                 return
 
-            new_tabs = []
-            dict_temp = {}
-            dict_dev = {}
-            dict_idx_dev = {}
-
-            tab_idx_counter = 0
+            # Thu thập danh sách thiết bị có trạng thái 'device'
+            raw_devices = []
             for line in res.stdout.strip().split('\n')[1:]:
                 line = line.strip()
                 if not line:
                     continue
                 parts = line.split()
                 if len(parts) >= 2 and parts[1].lower() == "device":
-                    dev_id = parts[0].strip()
-                    is_bs, label = self._is_bluestacks_device(dev_id, conf_instances)
-                    if not is_bs:
-                        continue
-                    new_tabs.append(label)
-                    idx_str = str(tab_idx_counter)
-                    dict_temp[label] = idx_str
-                    dict_dev[label] = dev_id
-                    dict_idx_dev[idx_str] = dev_id
-                    tab_idx_counter += 1
+                    raw_devices.append(parts[0].strip())
+
+            # Chuẩn hóa & khử trùng lặp (nếu tồn tại cả emulator-5554 và 127.0.0.1:5555 cho cùng máy ảo)
+            unique_devices = []
+            for dev in raw_devices:
+                if dev.startswith("emulator-"):
+                    try:
+                        c_p = int(dev.split("-")[1])
+                        matching_tcp = f"127.0.0.1:{c_p + 1}"
+                        if matching_tcp in raw_devices:
+                            continue  # Bỏ qua bản emulator-XXXX trùng lặp
+                    except Exception:
+                        pass
+                unique_devices.append(dev)
+
+            detected_tabs = []
+            for dev_id in unique_devices:
+                is_bs, label, sort_k = self._is_bluestacks_device(dev_id, conf_instances)
+                if not is_bs:
+                    continue
+                detected_tabs.append((sort_k, label, dev_id))
+
+            # Sắp xếp tab theo thứ tự cổng tăng dần (Tab 1 -> cổng 5555, Tab 2 -> cổng 5565...)
+            detected_tabs.sort(key=lambda x: x[0])
+
+            new_tabs = []
+            dict_temp = {}
+            dict_dev = {}
+            dict_idx_dev = {}
+
+            for tab_idx_counter, (_, label, dev_id) in enumerate(detected_tabs):
+                new_tabs.append(label)
+                idx_str = str(tab_idx_counter)
+                dict_temp[label] = idx_str
+                dict_dev[label] = dev_id
+                dict_idx_dev[idx_str] = dev_id
 
             self.dict_name_to_device = dict_dev
             self.dict_index_to_device = dict_idx_dev
+
+            # Tự động retry tối đa 2 lần nếu chưa tìm thấy tab nào (trường hợp giả lập đang khởi động game)
+            if not new_tabs:
+                retries = getattr(self, '_scan_retry_count', 0)
+                if retries < 2:
+                    self._scan_retry_count = retries + 1
+                    self.after(2000, self.refresh_ld_tabs_async)
+                    return
+            else:
+                self._scan_retry_count = 0
+
             self.after(0, self._update_ui_ld_scan_result, new_tabs, None, dict_temp)
 
         except Exception as e:
@@ -8795,42 +8862,64 @@ def _has_other_running_slots(current_slot: int = 1) -> bool:
 
 
 def _get_bluestacks_tabs_info_fast():
-    """Dò tìm nhanh số lượng và danh sách tên tab BlueStacks hiện có trên hệ thống (chạy < 30ms)"""
+    """Dò tìm nhanh số lượng và danh sách tên tab BlueStacks hiện có trên hệ thống từ bluestacks.conf (chạy < 30ms)"""
     try:
-        import os, sys, json, subprocess
-        app_d = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
-        cfg_path = os.path.join(app_d, "config.json")
-        ld_p = ""
-        if os.path.exists(cfg_path):
-            try:
-                with open(cfg_path, "r", encoding="utf-8") as f:
-                    cfg = json.load(f)
-                    ld_p = cfg.get("ld_path", "")
-            except Exception:
-                pass
-        cand_dirs = [ld_p] if ld_p else []
-        cand_dirs += [
-            r"C:\LDPlayer\LDPlayer9",
-            r"C:\LDPlayer",
-            r"C:\leidian\LDPlayer9",
-            r"C:\Program Files\LDPlayer9",
-            r"C:\Program Files\LDPlayer\LDPlayer9"
-        ]
-        creation_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-        for d in cand_dirs:
-            if not d:
-                continue
-            for exe in ["ldconsole.exe", "dnconsole.exe"]:
-                p = os.path.join(d, exe)
-                if os.path.exists(p):
+        import os, winreg
+        conf_path = None
+        prog_data = os.environ.get("ProgramData", r"C:\ProgramData")
+        for cand in [
+            os.path.join(prog_data, r"BlueStacks_nxt\bluestacks.conf"),
+            os.path.join(prog_data, r"BlueStacks\bluestacks.conf"),
+            os.path.join(prog_data, r"BlueStacks_msi5\bluestacks.conf"),
+            r"C:\ProgramData\BlueStacks_nxt\bluestacks.conf",
+            r"D:\ProgramData\BlueStacks_nxt\bluestacks.conf",
+        ]:
+            if os.path.exists(cand):
+                conf_path = cand
+                break
+
+        if not conf_path:
+            for hkey in [winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER]:
+                for subkey in [r"SOFTWARE\BlueStacks_nxt", r"SOFTWARE\BlueStacks"]:
                     try:
-                        res = subprocess.run([p, "list2"], timeout=2.0, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=creation_flags)
-                        if res and res.returncode == 0 and res.stdout:
-                            lines = [l.strip() for l in res.stdout.strip().splitlines() if l.strip()]
-                            names = [l.split(',')[1].strip() for l in lines if len(l.split(',')) >= 2]
-                            return len(lines), names
+                        with winreg.OpenKey(hkey, subkey) as k:
+                            val, _ = winreg.QueryValueEx(k, "UserDefinedDir")
+                            if val:
+                                p = os.path.join(val, "bluestacks.conf")
+                                if os.path.exists(p):
+                                    conf_path = p
+                                    break
                     except Exception:
                         pass
+                if conf_path:
+                    break
+
+        if conf_path and os.path.exists(conf_path):
+            instances = {}
+            with open(conf_path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line.startswith("bst.instance."):
+                        continue
+                    parts = line.split("=", 1)
+                    if len(parts) != 2:
+                        continue
+                    key, val = parts[0].strip(), parts[1].strip().strip('"')
+                    subparts = key.split(".")
+                    if len(subparts) >= 4:
+                        inst_id = subparts[2]
+                        prop = ".".join(subparts[3:])
+                        if inst_id not in instances:
+                            instances[inst_id] = {}
+                        if prop == "display_name":
+                            instances[inst_id]["display_name"] = val
+                        elif prop in ("status.adb_port", "adb_port"):
+                            instances[inst_id]["port"] = val
+
+            valid_instances = [inst for inst in instances.values() if inst.get("port")]
+            if valid_instances:
+                names = [inst.get("display_name", "BlueStacks") for inst in valid_instances]
+                return len(names), names
     except Exception:
         pass
     return None, []
