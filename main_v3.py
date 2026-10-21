@@ -366,16 +366,29 @@ class ToolLDPlayerGUI(ctk.CTk):
             res = subprocess.run([adb_path, "devices"], timeout=2.5, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, creationflags=creation_flags)
             if res and res.stdout:
                 lines = [line.strip() for line in res.stdout.splitlines() if line.strip()]
-                active_devices = [line.split()[0] for line in lines[1:] if len(line.split()) >= 2 and line.split()[1].lower() == "device"]
-                for dev in active_devices:
+                all_devices = [line.split()[0] for line in lines[1:] if len(line.split()) >= 1]
+                
+                # 1. Quét mọi emulator-XXXX đang có để ngắt kết nối IP tương ứng (127.0.0.1:XXXX+1) kể cả khi ở trạng thái offline
+                for dev in all_devices:
                     if dev.startswith("emulator-"):
                         try:
                             c_port = int(dev.split("-")[1])
                             dup_ip = f"127.0.0.1:{c_port + 1}"
-                            if dup_ip in active_devices:
+                            if dup_ip in all_devices:
                                 subprocess.run([adb_path, "disconnect", dup_ip], timeout=1.5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creation_flags)
                         except Exception:
                             pass
+
+                # 2. Ngắt chủ động cổng IP của tab được gán nếu đang tồn tại (dù emulator chưa kịp online)
+                assigned_idx = getattr(self, 'assigned_tab_index', None)
+                if assigned_idx is not None:
+                    try:
+                        tab_n = int(assigned_idx)
+                        target_ip = f"127.0.0.1:{5555 + tab_n * 2}"
+                        if target_ip in all_devices:
+                            subprocess.run([adb_path, "disconnect", target_ip], timeout=1.5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creation_flags)
+                    except Exception:
+                        pass
         except Exception:
             pass
 
