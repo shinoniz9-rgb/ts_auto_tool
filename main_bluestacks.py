@@ -1917,10 +1917,16 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                 continue
 
             b_sp, g_sp, r_sp = cv2.split(roi_sp)
-            cyan_sp = int(np.sum((b_sp >= 140) & (g_sp >= 100) & (r_sp <= 80)))
+            cyan_mask = (b_sp >= 140) & (g_sp >= 100) & (r_sp <= 80)
+            cyan_sp = int(np.sum(cyan_mask))
 
             # Slot trống không có thành viên / không mang pet (cyan_sp < 3px) -> Bỏ qua
             if cyan_sp < 3:
+                continue
+
+            # Chống nhận diện nhầm chữ số/hiệu ứng bay ở giữa thanh (như số lượt, sát thương ở map Boss):
+            # Thanh SP thật của nhân vật/pet luôn hiển thị bắt đầu từ mép trái (10 pixel đầu tiên của thanh).
+            if not np.any(cyan_mask[:, :10]):
                 continue
 
             # 2. KIỂM TRA ĐIỀU KIỆN 2: DẢI MÁU ĐỎ HP (Xác nhận thành viên đã gục ngã)

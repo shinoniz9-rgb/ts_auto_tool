@@ -280,7 +280,7 @@ def sync_git(new_ver, changelog):
             "version.py", "main_v3.py", "web_server_v3.py", "publish_release.py", "updater.py",
             "main_bluestacks.py", "build_bluestacks.py", ".gitignore",
             "Tao_Loi_Tat_Desktop.bat", "launch_app.vbs", "AGENTS.md", "config.json",
-            "assets/card_d/", "assets/card_e/"
+            "assets/card_d/", "assets/card_e/", "buff_train_bluestacks/buff_train_tool.py"
         ]
         subprocess.run(["git", "add"] + files_to_add, check=False)
         commit_res = subprocess.run(
