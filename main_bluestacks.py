@@ -295,7 +295,8 @@ class ToolBlueStacksGUI(ctk.CTk):
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("Thoát Ứng Dụng", self._exit_app_from_tray)
             )
-            self.tray_icon = pystray.Icon("TS_Origin_Control", icon_img, "TS Origin-Control", menu)
+            tray_title = self.title() if callable(getattr(self, 'title', None)) else "Main - TS Origin"
+            self.tray_icon = pystray.Icon("TS_Origin_Control", icon_img, tray_title, menu)
             threading.Thread(target=self.tray_icon.run, daemon=True).start()
         except Exception as e:
             print(f"Không thể khởi tạo khay hệ thống: {e}")
@@ -306,6 +307,11 @@ class ToolBlueStacksGUI(ctk.CTk):
             self.withdraw()  # Ẩn cửa sổ chính
             if self.tray_icon is None:
                 self._setup_system_tray()
+            else:
+                try:
+                    self.tray_icon.title = self.title()
+                except Exception:
+                    pass
             self.log_info("📌 Tool đã được thu nhỏ xuống khay hệ thống (System Tray).")
         else:
             self.iconify()  # Thu nhỏ xuống Taskbar nếu không hỗ trợ khay hệ thống
@@ -1839,7 +1845,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                 self._thread_buff = None
 
     def _tap_login_auto_twice(self, dnconsole_path: str, tab_index: str):
-        """Tap 2 lần cách nhau 0.3s vào tọa độ nút Auto (190, 140)"""
+        """Tap 2 lần cách nhau 0.6s vào tọa độ nút Auto (190, 140)"""
         for tap_idx in range(1, 3):
             is_f_buff = hasattr(self, 'var_buff') and self.var_buff.get()
             is_d_active = hasattr(self, 'var_switch_D') and self.var_switch_D.get() and not (hasattr(self, '_should_stop_card_D') and self._should_stop_card_D())
@@ -1850,7 +1856,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             log_tag = "Card D" if is_d_active else ("Phòng Thủ" if is_defense else "HP / SP")
             self.after(0, self.log_info, f"👉 [{log_tag}] Tap nút Auto (190, 140) lần {tap_idx}/2...")
             self._exec_cmd([dnconsole_path, "adb", "--index", str(tab_index), "--command", "shell input tap 190 140"])
-            time.sleep(0.3)
+            time.sleep(0.6)
 
     def _check_and_tap_f_tieptheo(self, dnconsole_path: str, tab_index: str, log_tag: str = "HP / SP", stop_check=None):
         """
@@ -1964,7 +1970,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
           + Nếu CÓ thấy chiêu:
             * Tap vào chiêu f_hs.png ➔ Hoãn 0.2s.
             * Tap skill vào tọa độ offset cơ thể người chết ưu tiên (X + 35, Y + 95) ➔ Hoãn 0.2s.
-            * Tap 2 lần nút Auto (190, 140) cách nhau 0.3s ➔ Hoãn chờ 5s ➔ Kết thúc lượt quay lại vòng lặp.
+            * Tap 2 lần nút Auto (190, 140) cách nhau 0.6s ➔ Hoãn chờ 5s ➔ Kết thúc lượt quay lại vòng lặp.
         """
         def _is_stopped():
             if is_card_d:
@@ -2040,7 +2046,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         if _is_stopped():
             return True
 
-        # Tap 2 lần nút Auto (190, 140) cách nhau 0.3s ➔ Hoãn chờ 5s ➔ Kết thúc lượt quay lại vòng lặp
+        # Tap 2 lần nút Auto (190, 140) cách nhau 0.6s ➔ Hoãn chờ 5s ➔ Kết thúc lượt quay lại vòng lặp
         self.after(0, self.log_info, f"🎯 [{log_tag}] Tap 2 lần nút Auto (190, 140) ➔ Hoãn 5s ➔ Kết thúc lượt hồi sinh...")
         self._tap_login_auto_twice(dnconsole_path, tab_index)
         if self._sleep_with_stop_check(5.0, check_active=lambda: not _is_stopped()):
@@ -2279,7 +2285,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         return not self.stop_requested and not (hasattr(self, '_stop_event') and self._stop_event.is_set()) and check_active()
 
     def _combat_skill_tap_auto_twice_and_wait(self, dnconsole_path: str, tab_index: str, skill_cfg: dict, wait_seconds: float = 5.0):
-        """Tap 2 lần liên tiếp vào nút Auto (190, 140) cách nhau 0.3s, sau đó hoãn chờ wait_seconds (mặc định 5.0s)"""
+        """Tap 2 lần liên tiếp vào nút Auto (190, 140) cách nhau 0.6s, sau đó hoãn chờ wait_seconds (mặc định 5.0s)"""
         var_skill = getattr(self, skill_cfg["var_name"])
         check_active = var_skill.get
         skill_tag = skill_cfg["name"]
@@ -2289,7 +2295,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                 break
             self.after(0, self.log_info, f"👉 [{skill_tag}] Tap nút Auto (190, 140) lần {tap_idx}/2...")
             self._exec_cmd([dnconsole_path, "adb", "--index", str(tab_index), "--command", "shell input tap 190 140"])
-            time.sleep(0.3)
+            time.sleep(0.6)
 
         if not self.stop_requested and not (hasattr(self, '_stop_event') and self._stop_event.is_set()) and check_active():
             self.after(0, self.log_info, f"⏳ [{skill_tag}] Hoãn chờ cố định {wait_seconds}s (chờ thi triển skill & hồi lượt đánh)...")
@@ -4148,6 +4154,11 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
 
                 actual_idx = dict_map.get(target_sel, assigned_idx) if dict_map else assigned_idx
                 self.title(f"{target_sel} - TS Origin")
+                if hasattr(self, 'tray_icon') and self.tray_icon is not None:
+                    try:
+                        self.tray_icon.title = f"{target_sel} - TS Origin"
+                    except Exception:
+                        pass
 
                 count = len(tab_names)
                 self.log_info(f"✅ Đã phát hiện {count} tab BlueStacks. Cửa sổ Slot {getattr(self, 'slot_index', 1)} được gán và khóa cố định: {target_sel} (Port {self.web_port})")

@@ -29,7 +29,7 @@ def get_base_dir():
 
 BASE_DIR = get_base_dir()
 CONFIG_FILE = os.path.join(BASE_DIR, "config_buff_train.json")
-MAIN_CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
+MAIN_CONFIG_FILE = os.path.join(os.path.dirname(BASE_DIR), "config.json")
 
 def get_resource_path(relative_path: str):
     """Tìm file tài nguyên trong sys._MEIPASS (PyInstaller đóng gói) hoặc thư mục dự án"""
@@ -249,16 +249,19 @@ class BuffTrainTool(ctk.CTk):
         return instances
 
     def _exec_cmd(self, cmd_list, text=False, timeout=12):
+        """Thực thi lệnh ADB - chỉ mở PIPE khi cần đọc output (Zero-pipe overhead cho lệnh không cần output)"""
         creation_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-        kwargs = {
-            "stdout": subprocess.PIPE,
-            "stderr": subprocess.PIPE,
-            "creationflags": creation_flags
-        }
+        kwargs = {"creationflags": creation_flags}
         if text:
+            kwargs["stdout"] = subprocess.PIPE
+            kwargs["stderr"] = subprocess.PIPE
             kwargs["text"] = True
             kwargs["encoding"] = "utf-8"
             kwargs["errors"] = "ignore"
+        else:
+            # Lỗi 8: Không cấp phát pipe kernel vô ích cho lệnh chỉ thực thi (tap, connect, shell...)
+            kwargs["stdout"] = subprocess.DEVNULL
+            kwargs["stderr"] = subprocess.DEVNULL
         try:
             return subprocess.run(cmd_list, timeout=timeout, **kwargs)
         except Exception:
@@ -518,6 +521,7 @@ class BuffTrainTool(ctk.CTk):
 
     def _destroy_app_completely(self):
         try:
+            self._tab_monitor_active = False  # Dừng luồng Tab Monitor trước khi thoát
             self.stop_requested = True
             self._stop_event.set()
         except Exception:
@@ -543,49 +547,68 @@ class BuffTrainTool(ctk.CTk):
     # =========================================================================
     def _start_tab_monitor(self):
         """Bắt đầu luồng kiểm tra BlueStacks ngầm định kỳ khi rảnh rỗi"""
+        self._tab_monitor_active = True
         threading.Thread(target=self._tab_monitor_loop, daemon=True).start()
 
     def _tab_monitor_loop(self):
         # Quét lần đầu
         self._scan_tabs_logic(first_run=True)
-        while not self.stop_requested:
-            # Ngủ 4 giây giữa các lần quét (ngắt ngay khi stop)
-            for _ in range(40):
-                if self.stop_requested:
+        # Lỗi 3: Dùng cờ riêng _tab_monitor_active (không phụ thuộc stop_requested)
+        # → Luồng không chết vĩnh viễn sau mỗi lần bấm Stop / bỏ tích checkbox
+        while getattr(self, '_tab_monitor_active', True):
+            # Ngủ 8 giây giữa các lần quét (ngắt ngay khi thoát app)
+            for _ in range(80):
+                if not getattr(self, '_tab_monitor_active', True):
                     return
                 time.sleep(0.1)
 
-            # Chỉ tự động quét khi Buff Train đang KHÔNG chạy để dùng 0% CPU và không can thiệp ADB
+            # Chỉ tự động quét khi Buff Train đang KHÔNG chạy để không can thiệp ADB
             if not self.var_buff_train_hp.get():
                 self._scan_tabs_logic(first_run=False)
 
     def _is_bluestacks_device(self, dev_id: str, conf_instances: dict) -> tuple:
         """Kiểm tra thiết bị có đúng là BlueStacks không.
-        Trả về (is_bs: bool, label: str)"""
-        # 1. Khớp từ bluestacks.conf nếu có
+        Lỗi 5: Trả về (is_bs: bool, label: str, sort_key: int) để hỗ trợ sắp xếp Tab theo cổng"""
+        # Rút trích số cổng ADB từ dev_id
+        port_num = None
+        if ":" in dev_id:
+            try:
+                port_num = int(dev_id.split(":")[-1])
+            except Exception:
+                pass
+        elif dev_id.startswith("emulator-"):
+            try:
+                port_num = int(dev_id.split("-")[1]) + 1
+            except Exception:
+                pass
+
+        # 1. Khớp từ bluestacks.conf nếu có (ưu tiên cao nhất - không cần getprop)
         for inst in conf_instances.values():
             p = inst.get("port")
-            if p and (dev_id == f"127.0.0.1:{p}" or dev_id.endswith(f":{p}")):
-                dname = inst.get("display_name") or "BlueStacks"
-                return True, f"{dname} ({p})"
+            if p and p.isdigit():
+                p_int = int(p)
+                if port_num == p_int or dev_id == f"127.0.0.1:{p}" or dev_id.endswith(f":{p}"):
+                    dname = inst.get("display_name") or "BlueStacks"
+                    return True, f"{dname} ({p})", p_int
 
-        # 2. Kiểm tra biến môi trường đặc trưng của BlueStacks (ro.boot.bst_instance, ro.bsp.emulator)
+        # 2. Kiểm tra sâu qua getprop (dành cho cổng tùy biến hoặc khi không có conf)
+        # LDPlayer sẽ trả về chuỗi rỗng → tự động bị loại ở đây
         try:
             adb_path = self._get_adb_path()
             chk = self._exec_cmd([adb_path, "-s", dev_id, "shell", "getprop", "ro.boot.bst_instance"], text=True, timeout=1.5)
             if chk and chk.stdout.strip():
                 bst_name = chk.stdout.strip()
                 port = dev_id.split(":")[-1] if ":" in dev_id else dev_id
-                return True, f"BlueStacks {bst_name} ({port})"
+                return True, f"BlueStacks {bst_name} ({port})", (port_num if port_num else 9999)
 
             chk2 = self._exec_cmd([adb_path, "-s", dev_id, "shell", "getprop", "ro.bsp.emulator"], text=True, timeout=1.5)
             if chk2 and "blue" in chk2.stdout.lower():
                 port = dev_id.split(":")[-1] if ":" in dev_id else dev_id
-                return True, f"BlueStacks ({port})"
+                return True, f"BlueStacks ({port})", (port_num if port_num else 9999)
         except Exception:
             pass
 
-        return False, ""
+        return False, "", 99999
 
     def _scan_tabs_logic(self, first_run: bool = False):
         adb_path = self._get_adb_path()
@@ -598,21 +621,47 @@ class BuffTrainTool(ctk.CTk):
         conf_path = self._find_bluestacks_conf()
         conf_instances = self._parse_bluestacks_conf(conf_path) if conf_path else {}
 
-        # 1. Tìm các cổng ADB từ bluestacks.conf hoặc danh sách cổng phổ biến
-        ports_to_connect = set()
+        # 1. Tìm cổng ADB từ bluestacks.conf; nếu không có dùng danh sách mặc định
+        conf_ports = set()
         for inst in conf_instances.values():
             p = inst.get("port")
             if p and p.isdigit():
-                ports_to_connect.add(int(p))
+                conf_ports.add(int(p))
+        ports_to_connect = conf_ports if conf_ports else set([5555, 5565, 5575, 5585, 5595, 5605, 5615, 5625])
 
-        # Thêm các cổng BlueStacks mặc định phổ biến (5555, 5565, 5575, ...)
-        default_bs_ports = [5555, 5565, 5575, 5585, 5595, 5605, 5615, 5625]
-        for p in default_bs_ports:
-            ports_to_connect.add(p)
+        cflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
 
-        # Thử kết nối nhanh tới các port (timeout nhỏ)
-        for port in ports_to_connect:
-            self._exec_cmd([adb_path, "connect", f"127.0.0.1:{port}"], timeout=0.6)
+        # Lỗi 4: Lọc bỏ cổng ADB thuộc LDPlayer đang chạy (emulator-XXXX → cổng XXXX+1)
+        # Tránh kết nối nhầm vào LDPlayer, gây xung đột ADB server
+        try:
+            chk_devs = subprocess.run(
+                [adb_path, "devices"], timeout=1.5,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, encoding="utf-8", errors="ignore",
+                creationflags=cflags
+            )
+            if chk_devs and chk_devs.stdout:
+                for line in chk_devs.stdout.splitlines()[1:]:
+                    parts = line.strip().split()
+                    if parts and parts[0].startswith("emulator-"):
+                        try:
+                            c_p = int(parts[0].split("-")[1])
+                            ports_to_connect.discard(c_p + 1)  # Bỏ cổng TCP tương ứng LDPlayer
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+        # Kết nối nhanh tới các cổng BlueStacks thực sự (dùng DEVNULL, không đọc output)
+        for port in sorted(ports_to_connect):
+            try:
+                subprocess.run(
+                    [adb_path, "connect", f"127.0.0.1:{port}"],
+                    timeout=0.6, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    creationflags=cflags
+                )
+            except Exception:
+                pass
 
         # 2. Lấy danh sách thiết bị thực tế đang online từ adb devices
         res = self._exec_cmd([adb_path, "devices"], text=True, timeout=3)
@@ -622,24 +671,46 @@ class BuffTrainTool(ctk.CTk):
                 self._set_status("Chưa mở BlueStacks", "#EF4444")
             return
 
-        new_map = {}
-        tab_names = []
+        # Thu thập thiết bị online
+        raw_devices = []
         for line in res.stdout.strip().split("\n")[1:]:
             line = line.strip()
             if not line:
                 continue
             parts = line.split()
             if len(parts) >= 2 and parts[1].lower() == "device":
-                dev_id = parts[0].strip()
+                raw_devices.append(parts[0].strip())
 
-                is_bs, label = self._is_bluestacks_device(dev_id, conf_instances)
-                if not is_bs:
-                    continue
+        # Lỗi 5: Khử trùng lặp: bỏ emulator-XXXX nếu đã có 127.0.0.1:(XXXX+1) tương ứng
+        unique_devices = []
+        for dev in raw_devices:
+            if dev.startswith("emulator-"):
+                try:
+                    c_p = int(dev.split("-")[1])
+                    if f"127.0.0.1:{c_p + 1}" in raw_devices:
+                        continue
+                except Exception:
+                    pass
+            unique_devices.append(dev)
 
-                new_map[label] = dev_id
-                tab_names.append(label)
+        # Phân loại thiết bị BlueStacks và thu thập sort_key (số cổng) để sắp xếp
+        detected_tabs = []
+        for dev_id in unique_devices:
+            is_bs, label, sort_k = self._is_bluestacks_device(dev_id, conf_instances)
+            if not is_bs:
+                continue
+            detected_tabs.append((sort_k, label, dev_id))
 
-        # Nếu danh sách tab không đổi và không phải lần chạy đầu ➔ Bỏ qua, không tốn tài nguyên redraw
+        # Sắp xếp tab theo thứ tự cổng tăng dần (Tab 1 → 5555, Tab 2 → 5565...)
+        detected_tabs.sort(key=lambda x: x[0])
+
+        new_map = {}
+        tab_names = []
+        for _, label, dev_id in detected_tabs:
+            new_map[label] = dev_id
+            tab_names.append(label)
+
+        # Nếu danh sách tab không đổi và không phải lần chạy đầu ➔ Bỏ qua
         if new_map == self.tab_map and not first_run:
             return
 
@@ -1038,16 +1109,15 @@ class BuffTrainTool(ctk.CTk):
         finally:
             self._thread_worker = None
             try:
+                # Lỗi 6: Luôn nhả checkbox về False khi worker kết thúc (kể cả do exception bất ngờ)
+                self.after(0, lambda: self.var_buff_train_hp.set(False))
                 self.after(0, lambda: self.combo_tabs.configure(state="normal"))
                 if hasattr(self, 'combo_buff_skill'):
                     self.after(0, lambda: self.combo_buff_skill.configure(state="normal"))
                 self.after(0, self._update_interval_state)
             except Exception:
                 pass
-            if self.stop_requested or not self.var_buff_train_hp.get():
-                self._set_status("Đã dừng", "#EF4444")
-            else:
-                self._set_status("Sẵn sàng", "#9CA3AF")
+            self._set_status("Đã dừng", "#EF4444")
 
     def _handle_buff_train_hp_turn(self, tab_name: str, device_id: str, train_turn: int, current_match: int, in_battle: bool) -> tuple:
         if not self.var_buff_train_hp.get() or self.stop_requested:
@@ -1062,13 +1132,25 @@ class BuffTrainTool(ctk.CTk):
         # -------------------------------------------------------------------------
         if current_match == 1:
             if train_turn >= 3:
-                # Đã hoàn tất Lượt 2 Buff ➔ Không thao tác thêm, chỉ chờ hết trận
-                self._set_status(f"{pfx}Đã buff ➔ Chờ hết T1", "#38BDF8")
+                # Đã buff xong ở Lượt 2 ➔ Quét chờ hết trận HOẶC xử lý tiếp Lượt 3+ nếu quái chưa chết
+                self._set_status(f"{pfx}Đã buff ➔ Chờ T1/Lượt {train_turn}", "#38BDF8")
                 while not self.stop_requested and self.var_buff_train_hp.get():
+                    # 1. Quét kiểm tra hết trận (f_vaotran.png)
                     vt_x, vt_y = self._find_template_on_screen(device_id, "card_f/f_vaotran.png", threshold=0.80, region=(1215, 0, 1280, 45))
                     if vt_x is not None and vt_y is not None:
                         return self._on_match_finished(device_id, current_match=1, interval=interval)
-                    if self._sleep_with_stop_check(0.35):
+
+                    # 2. Quét kiểm tra Lượt 3+ (f_dung.png xuất hiện khi quái chưa chết hết)
+                    d_x, d_y = self._find_template_on_screen(device_id, "card_f/f_dung.png", threshold=0.80, region=(640, 0, 1280, 145))
+                    if d_x is not None and d_y is not None:
+                        self._set_status(f"{pfx}Lượt {train_turn}: Auto x2 (2s)", "#10B981")
+                        self._tap_auto(device_id, times=2)
+                        train_turn += 1
+                        if self._sleep_with_stop_check(2.0):
+                            return train_turn, current_match, in_battle
+                        continue
+
+                    if self._sleep_with_stop_check(0.5):
                         return train_turn, current_match, in_battle
                 return 1, current_match, in_battle
 
@@ -1142,6 +1224,7 @@ class BuffTrainTool(ctk.CTk):
         # -------------------------------------------------------------------------
         else:
             # Trong trận: Hoàn toàn KHÔNG thao tác gì! Game tự động đánh bằng Auto
+            # Lỗi 2: Tăng interval lên 1.2s (trận giãn cách auto, có thể kéo dài 20-60s)
             self._set_status(f"{pfx}Đang tự Auto...", "#38BDF8")
 
             while not self.stop_requested and self.var_buff_train_hp.get():
@@ -1150,7 +1233,7 @@ class BuffTrainTool(ctk.CTk):
                 if vt_x is not None and vt_y is not None:
                     return self._on_match_finished(device_id, current_match=current_match, interval=interval)
 
-                if self._sleep_with_stop_check(0.35):
+                if self._sleep_with_stop_check(1.2):
                     return 1, current_match, in_battle
 
             return 1, current_match, in_battle
@@ -1317,7 +1400,8 @@ class BuffTrainTool(ctk.CTk):
                 self._tap_login_auto_twice(device_id)
                 self._set_status("Hết trận ➔ Chờ trận mới", "#F59E0B")
                 while not self.stop_requested and self.var_buff_train_hp.get() and not self._stop_event.is_set():
-                    if self._sleep_with_stop_check(0.35):
+                    # Lỗi 2: 0.35s → 0.5s (đang chờ trận mới bắt đầu, không cần siêu nhanh)
+                    if self._sleep_with_stop_check(0.5):
                         return False
                     d_chk_x, d_chk_y = self._find_template_on_screen(device_id, "card_f/f_dung.png", threshold=0.80, region=(640, 0, 1280, 145))
                     if d_chk_x is not None and d_chk_y is not None:
@@ -1342,7 +1426,8 @@ class BuffTrainTool(ctk.CTk):
                 found_turn = True
                 break
 
-            if self._sleep_with_stop_check(0.35):
+            # Lỗi 2: 0.35s → 0.5s (chờ đến lượt trong chế độ HP/SP)
+            if self._sleep_with_stop_check(0.5):
                 return False
 
         if not found_turn or self.stop_requested or not self.var_buff_train_hp.get() or self._stop_event.is_set():
