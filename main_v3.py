@@ -798,11 +798,8 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                 pass
 
         # Xác định danh sách bot và chat_id nhận tin:
-        # Bot 1 gửi về chat_id (cá nhân), Bot 2 gửi về chat_id_2 (nhóm)
-        targets_to_send = []
-        if token and chat_id:
-            targets_to_send.append((token, str(chat_id)))
-
+        # - Card D (40 NPC & Nhị Kiều): Chỉ gửi riêng cho Bot 2 (Nhóm)
+        # - Các Card khác (Card A, B, C): Chỉ gửi cho Bot 1 (Cá nhân)
         is_d = (
             is_card_d
             or "[CARD D" in message
@@ -810,10 +807,15 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             or "[NHỊ KIỀU]" in message
             or "[2K & NHỊ KIỀU]" in message
         )
-        if is_d and token_2:
-            target_cid2 = str(chat_id_2) if chat_id_2 else str(chat_id)
-            if target_cid2:
-                targets_to_send.append((token_2, target_cid2))
+        targets_to_send = []
+        if is_d:
+            if token_2:
+                target_cid2 = str(chat_id_2) if chat_id_2 else str(chat_id)
+                if target_cid2:
+                    targets_to_send.append((token_2, target_cid2))
+        else:
+            if token and chat_id:
+                targets_to_send.append((token, str(chat_id)))
 
         if not targets_to_send:
             return
@@ -6919,6 +6921,8 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         if self._should_stop_card_D(): return False
         self.after(0, self.log_info, "📥 [Sự Kiện - Nhận Đội] Bắt đầu quy trình Nhận Đội...")
 
+        initial_skill = self.var_D_skill.get() if hasattr(self, 'var_D_skill') else None
+
         list_B = list(getattr(self, 'list_E_B', []))
         if not list_B:
             self.after(0, self.log_info, "⚠️ [Nhận Đội] Danh Sách B (Card Tổ Đội) đang trống! Không có nhân vật nào để nhận đội.")
@@ -6936,10 +6940,10 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                 if self._should_stop_card_D(): return False
 
                 # Hỗ trợ chuyển đổi kỹ năng realtime ngay trong lúc chờ lời mời
-                if check_skill_switch and hasattr(self, 'var_D_skill'):
+                if check_skill_switch and hasattr(self, 'var_D_skill') and initial_skill is not None:
                     cur_sk = self.var_D_skill.get()
-                    if cur_sk != "Đánh Tay":
-                        self.after(0, self.log_info, f"🔄 [Nhận Đội - Realtime] Phát hiện đổi kỹ năng sang '{cur_sk}' ➔ Chuyển sang thực thi kỹ năng mới...")
+                    if cur_sk != initial_skill:
+                        self.after(0, self.log_info, f"🔄 [Nhận Đội - Realtime] Phát hiện đổi kỹ năng từ '{initial_skill}' sang '{cur_sk}' ➔ Chuyển sang thực thi kỹ năng mới...")
                         return "SWITCH_SKILL"
 
                 nd_x, nd_y = self._find_template_on_screen(
@@ -7522,13 +7526,13 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                     )
                     break
 
-                # 2. ƯU TIÊN 2: Quét kiểm tra Tháp 14 (card_d/nhikieu/d_thap14.png, ngưỡng 88%, ROI 1060, 0, 1280, 40)
+                # 2. ƯU TIÊN 2: Quét kiểm tra Tháp 14 (card_d/nhikieu/d_thap14.png, ngưỡng 93%, ROI 1060, 0, 1280, 40)
                 t14_x, t14_y = self._find_template_on_screen(
                     dnconsole_path, tab_index, "card_d/nhikieu/d_thap14.png",
-                    threshold=0.88, region=(1060, 0, 1280, 40)
+                    threshold=0.93, region=(1060, 0, 1280, 40)
                 )
                 if t14_x is not None and t14_y is not None:
-                    self.after(0, self.log_info, f"🎯 [{mode_name} - Lượt {loop_idx}] Phát hiện 'card_d/nhikieu/d_thap14.png' tại ({t14_x}, {t14_y}) (>= 88%) ➔ Đã lên tới Tháp 14!")
+                    self.after(0, self.log_info, f"🎯 [{mode_name} - Lượt {loop_idx}] Phát hiện 'card_d/nhikieu/d_thap14.png' tại ({t14_x}, {t14_y}) (>= 93%) ➔ Đã lên tới Tháp 14!")
                     self.send_telegram_alert(
                         "🏯 [NHỊ KIỀU]\n🎯 Hoàn Thành Nhị Kiều !",
                         capture_screenshot=True,

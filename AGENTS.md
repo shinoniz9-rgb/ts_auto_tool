@@ -25,6 +25,13 @@
   - Không copy và không chứa file `ngrok.exe` trong thư mục `dist_bluestacks/`.
   - File cấu hình `dist_bluestacks/config.json` phải luôn giữ sạch sẽ tương tự bản `dist_share`: đặt `"enable_telegram": false`, loại bỏ hoàn toàn các trường token/chat_id Telegram và token/domain Ngrok.
   - Hàm gửi thông báo Telegram (`send_telegram_alert`) trong `main_bluestacks.py` luôn là hàm rỗng `return`, không chạy luồng nền và không gửi bất kỳ request mạng nào.
-- **Dọn dẹp rác sau đóng gói**: Sau khi chạy `build_bluestacks.py`, các file/thư mục tạm phát sinh từ quá trình build (bao gồm thư mục `build_bluestacks/`, file spec `TS_Origin_Control_BlueStacks.spec`, và cache `__pycache__/`) **bắt buộc phải được xóa bỏ sạch sẽ 100%**, chỉ giữ lại file thực thi và tài nguyên cần thiết trong `dist_bluestacks/`.
+## 8. Quy Tắc Phạm Vi Làm Việc Của Tool Party (`tool_party/`)
+- **Phạm vi cô lập tuyệt đối**: Khi phát triển, sửa lỗi hoặc tối ưu hóa công cụ Nhận Đội (`tool_party`), **CHỈ ĐƯỢC PHÉP THAO TÁC TRONG PHẠM VI THƯ MỤC `tool_party/`** (bao gồm `party_core.py`, `party_gui.py`, `config_party.json`, `tool_party/assets/`, `build_party.py`).
+- **Tuyệt đối không can thiệp bên ngoài**: Không được chỉnh sửa, can thiệp hay xóa bất kỳ file/folder nào ngoài `tool_party/` (như `main_v3.py`, `web_server_v3.py`, `config.json`, `dist/`, `assets/`, `main_bluestacks.py`...). Mọi tài nguyên hay logic của tool party phải tự chủ và khép kín hoàn toàn trong `tool_party/`.
+
+## 9. Tuyệt Đối Không Tự Ý Chỉnh Sửa Code Thao Tác Quy Trình
+- **Bảo toàn quy trình chuẩn**: Tuyệt đối **KHÔNG ĐƯỢC TỰ Ý CHỈNH SỬA**, thay đổi thuật toán, thêm bớt bước xử lý, sửa đổi thời gian hoãn (sleep/wait), ngưỡng nhận diện (threshold), vùng ROI hay tọa độ click trong bất kỳ quy trình thao tác nào của tool (cả `main_v3.py`, `party_core.py`, v.v.) **KHI CHƯA ĐƯỢC NGƯỜI DÙNG YÊU CẦU CỤ THỂ**. Mọi quy trình thao tác đã ổn định phải được giữ nguyên vẹn 100%.
+
+
 
 
