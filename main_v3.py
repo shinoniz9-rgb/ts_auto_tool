@@ -202,9 +202,9 @@ class ToolLDPlayerGUI(ctk.CTk):
         self._stop_event = threading.Event()
         self.var_enable_notify = ctk.BooleanVar(value=True)
         self.var_enable_telegram = ctk.BooleanVar(value=True)
-        self.telegram_bot_token = "8801452830:AAEmGuymSBhpsRB5HWM7kIShBaFcG4hpkMo"
+        self.telegram_bot_token = ""
         self.telegram_bot_token_2 = "8973239690:AAEgsy-M5vnXmNcU24hxt6e2lJzLFix53L0"
-        self.telegram_chat_id = "6647756940"
+        self.telegram_chat_id = ""
         self.telegram_chat_id_2 = "-1004344257210"
         self.current_active_tab = None
         self._run_token = 0
@@ -771,10 +771,10 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         Hỗ trợ delay_seconds để hoãn chụp ảnh trong luồng nền mà không làm chậm hay thay đổi luồng code game chính.
         Hỗ trợ gửi thêm Bot thứ 2 riêng biệt cho CARD D (40 NPC và Nhị Kiều)"""
         # 1. Kiểm tra cấu hình và cờ bật/tắt
-        token = getattr(self, 'telegram_bot_token', '') or "8801452830:AAEmGuymSBhpsRB5HWM7kIShBaFcG4hpkMo"
-        token_2 = getattr(self, 'telegram_bot_token_2', '') or "8973239690:AAEgsy-M5vnXmNcU24hxt6e2lJzLFix53L0"
-        chat_id = getattr(self, 'telegram_chat_id', '') or "6647756940"
-        chat_id_2 = getattr(self, 'telegram_chat_id_2', '') or "-1004344257210"
+        token = getattr(self, 'telegram_bot_token', '').strip()
+        token_2 = getattr(self, 'telegram_bot_token_2', '').strip() or "8973239690:AAEgsy-M5vnXmNcU24hxt6e2lJzLFix53L0"
+        chat_id = getattr(self, 'telegram_chat_id', '').strip()
+        chat_id_2 = getattr(self, 'telegram_chat_id_2', '').strip() or "-1004344257210"
         enable_tg = getattr(self, 'var_enable_telegram', None)
         if enable_tg is not None and not enable_tg.get():
             return
@@ -1213,6 +1213,30 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                     self.telegram_chat_id = str(config["telegram_chat_id"]).strip()
                 if "telegram_chat_id_2" in config:
                     self.telegram_chat_id_2 = str(config["telegram_chat_id_2"]).strip()
+
+                # --- Migrate config cũ: tự bổ sung token Bot 2 (Nhóm) và bật enable_telegram ---
+                _cfg_changed = False
+                if not config.get("telegram_bot_token_2"):
+                    config["telegram_bot_token_2"] = "8973239690:AAEgsy-M5vnXmNcU24hxt6e2lJzLFix53L0"
+                    self.telegram_bot_token_2 = "8973239690:AAEgsy-M5vnXmNcU24hxt6e2lJzLFix53L0"
+                    _cfg_changed = True
+                if not config.get("telegram_chat_id_2"):
+                    config["telegram_chat_id_2"] = "-1004344257210"
+                    self.telegram_chat_id_2 = "-1004344257210"
+                    _cfg_changed = True
+                if "enable_telegram" not in config:
+                    config["enable_telegram"] = True
+                    if hasattr(self, "var_enable_telegram"):
+                        self.var_enable_telegram.set(True)
+                    _cfg_changed = True
+                if _cfg_changed:
+                    try:
+                        with open(config_path, "w", encoding="utf-8") as _mf:
+                            import json as _json_migrate
+                            _json_migrate.dump(config, _mf, indent=4, ensure_ascii=False)
+                    except Exception:
+                        pass
+                # --- Kết thúc migrate ---
 
                 if "ld_path" in config:
                     saved_path = config["ld_path"]
