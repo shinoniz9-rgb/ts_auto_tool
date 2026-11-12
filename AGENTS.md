@@ -32,6 +32,16 @@
 ## 9. Tuyệt Đối Không Tự Ý Chỉnh Sửa Code Thao Tác Quy Trình
 - **Bảo toàn quy trình chuẩn**: Tuyệt đối **KHÔNG ĐƯỢC TỰ Ý CHỈNH SỬA**, thay đổi thuật toán, thêm bớt bước xử lý, sửa đổi thời gian hoãn (sleep/wait), ngưỡng nhận diện (threshold), vùng ROI hay tọa độ click trong bất kỳ quy trình thao tác nào của tool (cả `main_v3.py`, `party_core.py`, v.v.) **KHI CHƯA ĐƯỢC NGƯỜI DÙNG YÊU CẦU CỤ THỂ**. Mọi quy trình thao tác đã ổn định phải được giữ nguyên vẹn 100%.
 
+## 10. Kiểm Tra & Đồng Bộ Hình Ảnh Trước Khi Đóng Gói và Phát Hành Bản Mới (`dist`, `dist_bluestacks`, `dist_share`)
+- **Bước 1 (Kiểm tra ảnh gốc)**: Mỗi khi có yêu cầu đóng gói hoặc phát hành bản mới, đầu tiên phải quét và kiểm tra toàn bộ hình ảnh trong thư mục gốc `ts_auto_tool/assets/` (nơi người dùng thêm ảnh mới).
+- **Bước 2 (So sánh & Tự bổ sung)**: So sánh thư mục ảnh gốc `ts_auto_tool/assets/` với thư mục ảnh trong 3 folder phân phối:
+  - `ts_auto_tool/dist/assets/`
+  - `ts_auto_tool/dist_bluestacks/assets/`
+  - `ts_auto_tool/dist_share/assets/`
+  Nếu bất kỳ folder nào trong 3 folder trên bị thiếu hình ảnh so với folder gốc `assets/`, **phải tự động sao chép bổ sung đầy đủ 100% hình ảnh bị thiếu**.
+- **Bước 3 (Đóng gói & Phát hành bản đầy đủ ảnh)**: Chỉ sau khi đã hoàn thành trọn vẹn và xác nhận đầy đủ 2 bước kiểm tra và đồng bộ hình ảnh ở trên, mới tiếp tục tiến hành đóng gói và phát hành bản mới.
+
+
 
 
 

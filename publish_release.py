@@ -111,7 +111,12 @@ def build_all_exes(targets: list = None) -> dict:
             try:
                 import shutil
                 shutil.copy2(v3_exe, os.path.join(dist_share, "TS_Origin_Control_V3.exe"))
-                print(f"-> Đã đồng bộ file .exe sang dist_share/ (giữ nguyên config.json sạch)")
+                # Đồng bộ luôn cả thư mục assets sang dist_share/assets
+                dist_share_assets = os.path.join(dist_share, "assets")
+                if os.path.exists(dist_share_assets):
+                    shutil.rmtree(dist_share_assets, ignore_errors=True)
+                shutil.copytree(os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets"), dist_share_assets)
+                print(f"-> Đã đồng bộ file .exe và thư mục assets sang dist_share/ (giữ nguyên config.json sạch)")
             except Exception:
                 pass
 
